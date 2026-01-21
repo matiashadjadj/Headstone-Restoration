@@ -68,11 +68,8 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 def env_trimmed(key: str, default: str = "") -> str:
-    """
-    Return an environment variable with whitespace trimmed.
-    Helps avoid hidden spaces in .env values that can break connections.
-    """
-    return os.environ.get(key, default).strip()
+    value = os.environ.get(key, default)
+    return value.strip() if isinstance(value, str) else value
 
 
 DATABASES = {
