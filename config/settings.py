@@ -30,6 +30,8 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'core',
+    'payments'
 ]
 
 MIDDLEWARE = [
@@ -65,14 +67,22 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
+def env_trimmed(key: str, default: str = "") -> str:
+    """
+    Return an environment variable with whitespace trimmed.
+    Helps avoid hidden spaces in .env values that can break connections.
+    """
+    return os.environ.get(key, default).strip()
+
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.environ.get("DB_NAME", "postgres"),
-        "USER": os.environ.get("DB_USER", "postgres"),
-        "PASSWORD": os.environ.get("DB_PASSWORD", ""),
-        "HOST": os.environ.get("DB_HOST", ""),
-        "PORT": os.environ.get("DB_PORT", "5432"),
+        "NAME": env_trimmed("DB_NAME", "postgres"),
+        "USER": env_trimmed("DB_USER", "postgres"),
+        "PASSWORD": env_trimmed("DB_PASSWORD", ""),
+        "HOST": env_trimmed("DB_HOST", ""),
+        "PORT": env_trimmed("DB_PORT", "5432"),
         "CONN_MAX_AGE": 60,
         "OPTIONS": {"sslmode": "require"},
     }
@@ -119,3 +129,6 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY")
