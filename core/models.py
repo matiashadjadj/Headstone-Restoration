@@ -1,5 +1,6 @@
 from django.db import models
 from django.utils import timezone
+from django.contrib.auth.models import User
 
 
 class TimestampedModel(models.Model):
@@ -109,6 +110,7 @@ class Employee(TimestampedModel):
     phone = models.CharField(max_length=30, blank=True)
     role = models.CharField(max_length=30, choices=Role.choices, default=Role.TECH)
     is_active = models.BooleanField(default=True)
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="employee")
 
     def __str__(self) -> str:
         return self.full_name
@@ -139,7 +141,14 @@ class Service(TimestampedModel):
     service_type = models.CharField(max_length=30, choices=ServiceType.choices, default=ServiceType.OTHER)
     status = models.CharField(max_length=30, choices=Status.choices, default=Status.DRAFT)
 
+    # Scheduling (internal calendar)
+    # NOTE: `scheduled_date` is kept for backward compatibility; prefer `scheduled_start`.
+    scheduled_start = models.DateTimeField(null=True, blank=True)
+    estimated_minutes = models.PositiveIntegerField(null=True, blank=True)
+
+    # Backward compatibility (optional; can be removed once all code uses scheduled_start)
     scheduled_date = models.DateField(null=True, blank=True)
+
     completed_date = models.DateField(null=True, blank=True)
 
     # optional cost tracking (can also be computed from invoice items)

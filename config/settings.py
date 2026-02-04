@@ -31,7 +31,8 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'core',
-    'payments'
+    'payments',
+    'rest_framework'
 ]
 
 MIDDLEWARE = [
@@ -64,6 +65,16 @@ TEMPLATES = [
 WSGI_APPLICATION = 'config.wsgi.application'
 
 
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.SessionAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+}
+
+
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
@@ -74,14 +85,8 @@ def env_trimmed(key: str, default: str = "") -> str:
 
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": env_trimmed("DB_NAME", "postgres"),
-        "USER": env_trimmed("DB_USER", "postgres"),
-        "PASSWORD": env_trimmed("DB_PASSWORD", ""),
-        "HOST": env_trimmed("DB_HOST", ""),
-        "PORT": env_trimmed("DB_PORT", "5432"),
-        "CONN_MAX_AGE": 60,
-        "OPTIONS": {"sslmode": "require"},
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
     }
 }
 
@@ -89,20 +94,7 @@ DATABASES = {
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
 
-AUTH_PASSWORD_VALIDATORS = [
-    {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
-    },
-]
+AUTH_PASSWORD_VALIDATORS = []
 
 
 # Internationalization
@@ -120,7 +112,13 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+
+# Additional static dirs (app static already discovered via AppDirectoriesFinder)
+STATICFILES_DIRS = [
+    BASE_DIR / "core" / "static",
+]
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
