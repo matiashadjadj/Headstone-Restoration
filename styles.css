@@ -328,6 +328,12 @@ input, select {
   border: 1px solid #e5e7eb;
 }
 
+.role-select {
+  background: #f9fafb;
+  font-size: 13px;
+  min-width: 120px;
+}
+
 .calendar-placeholder {
   height: 300px;
   background: #f1f5f9;
