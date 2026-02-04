@@ -12,7 +12,7 @@ else
 fi
 
 # Use the default settings module unless the caller overrides it.
-export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-config.settings}"
+export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-backend.config.settings}"
 
 # Run migrations unless explicitly skipped.
 if [[ "${SKIP_MIGRATE:-0}" != "1" ]]; then

@@ -11,6 +11,7 @@ import os
 
 from django.core.asgi import get_asgi_application
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+# Use the relocated settings module under the backend package
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.config.settings')
 
 application = get_asgi_application()
