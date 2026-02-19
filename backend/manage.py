@@ -2,10 +2,16 @@
 """Django's command-line utility for administrative tasks."""
 import os
 import sys
+from pathlib import Path
 
 
 def main():
     """Run administrative tasks."""
+    # Ensure project root (one level up) is on PYTHONPATH so `backend.config` imports correctly
+    project_root = Path(__file__).resolve().parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.config.settings')
     try:
         from django.core.management import execute_from_command_line

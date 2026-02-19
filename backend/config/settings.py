@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'corsheaders',
     'core',
     'payments',
     'rest_framework'
@@ -37,6 +38,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -73,6 +75,18 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ],
 }
+
+
+# Allow frontend dev server to call the API while Django runs on port 8000.
+CORS_ALLOWED_ORIGINS = [
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+]
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^http://127\.0\.0\.1:\d+$",
+    r"^http://localhost:\d+$",
+]
+CORS_ALLOW_CREDENTIALS = True
 
 
 # Database
@@ -117,6 +131,7 @@ STATIC_URL = '/static/'
 # Additional static dirs (app static already discovered via AppDirectoriesFinder)
 STATICFILES_DIRS = [
     BASE_DIR / "core" / "static",
+    BASE_DIR.parent / "frontent",
 ]
 STATIC_ROOT = BASE_DIR / "staticfiles"
 

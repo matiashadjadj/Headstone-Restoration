@@ -41,6 +41,71 @@ const ROLE_CONFIGS = {
   }
 };
 
+// All API calls go through the same base so the frontend and Django share origin.
+const API_BASE = (window.__API_BASE__ || `${window.location.origin}/api`).replace(/\/+$/, '');
+
+function formatCurrency(value) {
+  const amount = Number.isFinite(value) ? value : 0;
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
+}
+
+function formatPercent(value) {
+  if (!Number.isFinite(value)) return '0%';
+  return `${value.toFixed(1)}%`;
+}
+
+function formatDateTimeShort(value) {
+  if (!value) return 'Not scheduled';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return 'Not scheduled';
+  return dt.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  });
+}
+
+function useApi(path, defaultValue, enabled = true) {
+  const [state, setState] = useState({ loading: true, error: null, data: defaultValue });
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!enabled) return undefined;
+
+    async function load() {
+      try {
+        const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+        const res = await fetch(`${API_BASE}/${cleanPath}`, { credentials: 'include' });
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        const json = await res.json();
+        if (!cancelled) setState({ loading: false, error: null, data: json });
+      } catch (err) {
+        if (!cancelled) setState({ loading: false, error: err.message || 'Request failed', data: defaultValue });
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [path, enabled]);
+
+  return state;
+}
+
+function useDashboardData(enabled) {
+  const { loading, error, data } = useApi(
+    '/dashboard/summary/',
+    { summary: null, upcoming_services: [], recent_completed: [] },
+    enabled
+  );
+  return {
+    loading,
+    error,
+    summary: data.summary,
+    upcoming: data.upcoming_services,
+    recent: data.recent_completed || []
+  };
+}
+
 const ROUTES = {
   admin: {
     dashboard: DashboardPage,
@@ -155,35 +220,63 @@ function parseRoute(path) {
 }
 
 function DashboardPage() {
+  const [enabled, setEnabled] = useState(false);
+  const { loading, error, summary, upcoming, recent } = useDashboardData(enabled);
+
+  const stats = [
+    {
+      label: 'Total Revenue',
+      value: summary ? formatCurrency(summary.total_revenue || 0) : '—',
+      sub: summary ? 'Live total' : 'Awaiting data'
+    },
+    {
+      label: 'Active Services',
+      value: summary?.active_services ?? '—',
+      sub: summary ? `${summary.services_today} scheduled today` : 'Awaiting data'
+    },
+    {
+      label: 'Crews Active',
+      value: summary?.crews_active ?? '—',
+      sub: summary ? 'Currently in field' : 'Awaiting data'
+    },
+    {
+      label: 'Completion Rate',
+      value: summary ? formatPercent(summary.completion_rate || 0) : '—',
+      sub: summary ? 'Last 30 days' : 'Awaiting data'
+    }
+  ];
+
+  const upcomingServices = (upcoming && upcoming.length)
+    ? upcoming.map((svc) => ({
+      id: svc.id,
+      title: svc.memorial_name || `Service #${svc.id}`,
+      cemetery: svc.cemetery_name || 'Scheduled location',
+      meta: `${formatDateTimeShort(svc.scheduled_start)} · ${svc.status_display || svc.status || 'Scheduled'}`
+    }))
+    : [];
+
   return (
     <>
       <h1 className="page-title">Dashboard</h1>
       <p className="page-subtitle">Overview of restoration activity, revenue, and scheduling.</p>
 
+      {!enabled && (
+        <div className="card">
+          <p className="meta">Dashboard data is paused.</p>
+          <button className="primary-btn" onClick={() => setEnabled(true)}>Load dashboard data</button>
+        </div>
+      )}
+
+      {enabled && error && <div className="card warn">Backend error: {error}</div>}
+
       <section className="kpis">
-        <div className="kpi">
-          <span className="kpi-label">Total Revenue</span>
-          <strong>$38,420.50</strong>
-          <small className="positive">+12% from last month</small>
-        </div>
-
-        <div className="kpi">
-          <span className="kpi-label">Active Services</span>
-          <strong>18</strong>
-          <small>6 scheduled today</small>
-        </div>
-
-        <div className="kpi">
-          <span className="kpi-label">Crews Active</span>
-          <strong>5</strong>
-          <small>Currently in field</small>
-        </div>
-
-        <div className="kpi">
-          <span className="kpi-label">Completion Rate</span>
-          <strong>99.1%</strong>
-          <small>Last 30 days</small>
-        </div>
+        {stats.map((stat) => (
+          <div key={stat.label} className="kpi">
+            <span className="kpi-label">{stat.label}</span>
+            <strong>{stat.value}</strong>
+            <small className={stat.label === 'Total Revenue' ? 'positive' : ''}>{stat.sub}</small>
+          </div>
+        ))}
       </section>
 
       <section className="grid-2">
@@ -193,28 +286,24 @@ function DashboardPage() {
             <button className="ghost-btn">View Calendar</button>
           </div>
 
-          <ul className="service-list">
-            <li>
-              <strong>Smith Family Headstone</strong>
-              <span>Greenwood Cemetery</span>
-              <div className="meta">9:00 AM &middot; GPS Verified &middot; Crew A</div>
-            </li>
-            <li>
-              <strong>Jones Memorial</strong>
-              <span>Oakwood Memorial Park</span>
-              <div className="meta">10:30 AM &middot; GPS Verified &middot; Crew B</div>
-            </li>
-            <li>
-              <strong>Thompson Headstone</strong>
-              <span>Hillcrest Cemetery</span>
-              <div className="meta">11:00 AM &middot; Maintenance &middot; Crew C</div>
-            </li>
-          </ul>
+          {loading && <p className="meta">Loading from backend...</p>}
+          {!loading && upcomingServices.length === 0 && <p className="meta">No upcoming services scheduled.</p>}
+          {!loading && upcomingServices.length > 0 && (
+            <ul className="service-list">
+              {upcomingServices.map((svc) => (
+                <li key={svc.id}>
+                  <strong>{svc.title}</strong>
+                  <span>{svc.cemetery}</span>
+                  <div className="meta">{svc.meta}</div>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
         <div className="card">
           <h3>Monthly Revenue</h3>
-          <div className="chart-placeholder">Chart goes here</div>
+          <div className="chart-placeholder">Connect chart component</div>
         </div>
       </section>
 
@@ -230,30 +319,24 @@ function DashboardPage() {
                 <th>Amount</th>
               </tr>
             </thead>
-            <tbody>
-              <tr>
-                <td>Johnson Headstone</td>
-                <td>Elmwood Cemetery</td>
-                <td>09/12/23</td>
-                <td>$180.00</td>
+          <tbody>
+            {loading && <tr><td colSpan="4" className="meta">Loading...</td></tr>}
+            {!loading && recent.length === 0 && <tr><td colSpan="4" className="meta">No completed services yet.</td></tr>}
+            {!loading && recent.map((svc) => (
+              <tr key={svc.id}>
+                <td>{svc.memorial_name}</td>
+                <td>{svc.cemetery_name || '—'}</td>
+                <td>{svc.completed_date || '—'}</td>
+                <td>{svc.amount != null ? formatCurrency(Number(svc.amount)) : '—'}</td>
               </tr>
-              <tr>
-                <td>Carter Memorial</td>
-                <td>Rolling Hills</td>
-                <td>09/23/23</td>
-                <td>$160.00</td>
-              </tr>
-            </tbody>
+            ))}
+          </tbody>
           </table>
         </div>
 
         <div className="card">
           <h3>Photo Archive Status</h3>
-          <p>4 services pending photo review</p>
-          <div className="progress">
-            <div className="progress-bar"></div>
-          </div>
-          <button className="primary-btn full">Review Photos</button>
+          <p className="meta">No photo metrics yet. Connect a photos endpoint to show status.</p>
         </div>
       </section>
     </>
@@ -261,37 +344,40 @@ function DashboardPage() {
 }
 
 function MemorialsPage() {
+  const { loading, error, data } = useApi('/memorials/', []);
+
   return (
     <>
       <h1 className="page-title">Memorials</h1>
       <p className="page-subtitle">Permanent records of restored and maintained memorials.</p>
 
+      {error && <div className="card warn">Backend error: {error}</div>}
+
       <div className="card">
         <table>
           <thead>
             <tr>
-              <th>Memorial</th>
+              <th>Customer</th>
               <th>Cemetery</th>
               <th>Last Service</th>
               <th>Status</th>
-              <th>Next Action</th>
             </tr>
           </thead>
           <tbody>
-            <tr>
-              <td>Smith Family Headstone</td>
-              <td>Greenwood Cemetery</td>
-              <td>09/12/23</td>
-              <td><span className="tag good">Maintained</span></td>
-              <td>View</td>
-            </tr>
-            <tr>
-              <td>Johnson Memorial</td>
-              <td>Oakwood Memorial Park</td>
-              <td>06/03/23</td>
-              <td><span className="tag warn">Needs Review</span></td>
-              <td>Schedule</td>
-            </tr>
+            {loading && (
+              <tr><td colSpan="4" className="meta">Loading...</td></tr>
+            )}
+            {!loading && data.length === 0 && (
+              <tr><td colSpan="4" className="meta">No memorials yet.</td></tr>
+            )}
+            {!loading && data.map((row) => (
+              <tr key={row.id}>
+                <td>{row.customer}</td>
+                <td>{row.cemetery || '—'}</td>
+                <td>{row.last_service_date || '—'}</td>
+                <td><span className="tag">{row.last_service_status || 'N/A'}</span></td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
@@ -304,20 +390,20 @@ function SchedulingPage() {
     <>
       <h1 className="page-title">Scheduling</h1>
       <p className="page-subtitle">Upcoming and recurring restoration services.</p>
-
-      <div className="card">
-        <h3>Service Calendar</h3>
-        <div className="calendar-placeholder">Calendar view goes here</div>
-      </div>
+      <div className="card"><p className="meta">Connect a calendar endpoint to display schedule.</p></div>
     </>
   );
 }
 
 function CustomersPage() {
+  const { loading, error, data } = useApi('/customers/', []);
+
   return (
     <>
       <h1 className="page-title">Customers</h1>
       <p className="page-subtitle">Client records and associated memorials.</p>
+
+      {error && <div className="card warn">Backend error: {error}</div>}
 
       <div className="card">
         <table>
@@ -325,17 +411,23 @@ function CustomersPage() {
             <tr>
               <th>Customer</th>
               <th>Memorials</th>
-              <th>Active Plan</th>
+              <th>Email</th>
+              <th>Phone</th>
               <th>Last Contact</th>
             </tr>
           </thead>
           <tbody>
-            <tr>
-              <td>Sarah Johnson</td>
-              <td>2</td>
-              <td>Annual Maintenance</td>
-              <td>09/15/23</td>
-            </tr>
+            {loading && <tr><td colSpan="5" className="meta">Loading...</td></tr>}
+            {!loading && data.length === 0 && <tr><td colSpan="5" className="meta">No customers yet.</td></tr>}
+            {!loading && data.map((c) => (
+              <tr key={c.id}>
+                <td>{c.full_name}</td>
+                <td>{c.memorials_count || 0}</td>
+                <td>{c.email || '—'}</td>
+                <td>{c.phone || '—'}</td>
+                <td>{c.last_contact || '—'}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
@@ -344,10 +436,14 @@ function CustomersPage() {
 }
 
 function CemeteriesPage() {
+  const { loading, error, data } = useApi('/cemeteries/', []);
+
   return (
     <>
       <h1 className="page-title">Cemeteries</h1>
       <p className="page-subtitle">Service locations and memorial distribution.</p>
+
+      {error && <div className="card warn">Backend error: {error}</div>}
 
       <div className="card">
         <table>
@@ -360,12 +456,16 @@ function CemeteriesPage() {
             </tr>
           </thead>
           <tbody>
-            <tr>
-              <td>Greenwood Cemetery</td>
-              <td>Ogden</td>
-              <td>124</td>
-              <td>18</td>
-            </tr>
+            {loading && <tr><td colSpan="4" className="meta">Loading...</td></tr>}
+            {!loading && data.length === 0 && <tr><td colSpan="4" className="meta">No cemeteries yet.</td></tr>}
+            {!loading && data.map((c) => (
+              <tr key={c.id}>
+                <td>{c.name}</td>
+                <td>{c.city || '—'}</td>
+                <td>{c.memorials_count || 0}</td>
+                <td>{c.active_services || 0}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
@@ -378,12 +478,7 @@ function ArchivePage() {
     <>
       <h1 className="page-title">Photos & Archive</h1>
       <p className="page-subtitle">Permanent visual records by memorial.</p>
-
-      <div className="grid-3">
-        <div className="photo-card">Before</div>
-        <div className="photo-card">After</div>
-        <div className="photo-card">Comparison</div>
-      </div>
+      <div className="card"><p className="meta">No photos to display. Integrate photo list API.</p></div>
     </>
   );
 }
@@ -393,11 +488,7 @@ function ReportsPage() {
     <>
       <h1 className="page-title">Reports</h1>
       <p className="page-subtitle">Operational and revenue insights.</p>
-
-      <div className="grid-2">
-        <div className="card">Revenue by Service Type</div>
-        <div className="card">Maintenance Retention</div>
-      </div>
+      <div className="card"><p className="meta">Hook up reporting endpoints to show charts.</p></div>
     </>
   );
 }
@@ -436,52 +527,7 @@ function EmployeeDashboardPage() {
     <>
       <h1 className="page-title">Crew Dashboard</h1>
       <p className="page-subtitle">Today's assignments, status updates, and photo tasks.</p>
-
-      <section className="grid-2">
-        <div className="card">
-          <h3>Next Service</h3>
-          <p>Smith Family Headstone</p>
-          <div className="meta">9:00 AM &middot; Greenwood Cemetery</div>
-          <button className="primary-btn">View Route</button>
-        </div>
-        <div className="card">
-          <h3>Task Queue</h3>
-          <ul className="service-list">
-            <li>
-              <strong>Photo Uploads</strong>
-              <span>2 pending</span>
-              <div className="meta">Due today</div>
-            </li>
-            <li>
-              <strong>Maintenance Checks</strong>
-              <span>3 scheduled</span>
-              <div className="meta">This week</div>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <section className="grid-2">
-        <div className="card">
-          <h3>Upcoming Stops</h3>
-          <ul className="service-list">
-            <li>
-              <strong>Jones Memorial</strong>
-              <span>Oakwood Memorial Park</span>
-              <div className="meta">10:30 AM &middot; Crew B</div>
-            </li>
-            <li>
-              <strong>Thompson Headstone</strong>
-              <span>Hillcrest Cemetery</span>
-              <div className="meta">11:00 AM &middot; Crew C</div>
-            </li>
-          </ul>
-        </div>
-        <div className="card">
-          <h3>Safety Notes</h3>
-          <p>Wet conditions at Greenwood. Bring slip mats.</p>
-        </div>
-      </section>
+      <div className="card"><p className="meta">No crew data yet. Connect crew/assignment API.</p></div>
     </>
   );
 }
@@ -492,10 +538,7 @@ function EmployeeSchedulingPage() {
       <h1 className="page-title">My Schedule</h1>
       <p className="page-subtitle">Crew assignments and upcoming services.</p>
 
-      <div className="card">
-        <h3>Service Calendar</h3>
-        <div className="calendar-placeholder">Calendar view goes here</div>
-      </div>
+      <div className="card"><p className="meta">No schedule data yet.</p></div>
     </>
   );
 }
@@ -505,46 +548,7 @@ function CustomerDashboardPage() {
     <>
       <h1 className="page-title">Customer Overview</h1>
       <p className="page-subtitle">Your memorials, service history, and upcoming visits.</p>
-
-      <section className="grid-2">
-        <div className="card">
-          <h3>Next Service</h3>
-          <p>Smith Family Headstone</p>
-          <div className="meta">Scheduled for 10/12/23</div>
-          <button className="primary-btn">View Details</button>
-        </div>
-        <div className="card">
-          <h3>Service Status</h3>
-          <p>Maintenance plan active</p>
-          <div className="progress">
-            <div className="progress-bar"></div>
-          </div>
-          <span className="meta">72% of yearly plan complete</span>
-        </div>
-      </section>
-
-      <section className="grid-2">
-        <div className="card">
-          <h3>Recent Updates</h3>
-          <ul className="service-list">
-            <li>
-              <strong>Photo Review</strong>
-              <span>2 new photos added</span>
-              <div className="meta">Yesterday</div>
-            </li>
-            <li>
-              <strong>Service Complete</strong>
-              <span>Cleaning finished</span>
-              <div className="meta">09/23/23</div>
-            </li>
-          </ul>
-        </div>
-        <div className="card">
-          <h3>Support</h3>
-          <p>Questions about services or billing?</p>
-          <button className="ghost-btn">Contact Support</button>
-        </div>
-      </section>
+      <div className="card"><p className="meta">No customer dashboard data yet.</p></div>
     </>
   );
 }
@@ -555,26 +559,7 @@ function CustomerMemorialsPage() {
       <h1 className="page-title">My Memorials</h1>
       <p className="page-subtitle">Active memorials under your care plan.</p>
 
-      <div className="card">
-        <table>
-          <thead>
-            <tr>
-              <th>Memorial</th>
-              <th>Cemetery</th>
-              <th>Plan</th>
-              <th>Next Service</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Smith Family Headstone</td>
-              <td>Greenwood Cemetery</td>
-              <td>Annual Maintenance</td>
-              <td>10/12/23</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <div className="card"><p className="meta">No memorials for this customer yet.</p></div>
     </>
   );
 }

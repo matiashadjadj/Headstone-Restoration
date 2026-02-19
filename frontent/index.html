@@ -10,6 +10,16 @@
 </head>
 <body>
   <div id="root"></div>
+  <script>
+    // When frontend is served on a separate dev port, target Django on :8000.
+    (function() {
+      const { protocol, hostname, port, origin } = window.location;
+      const isDjangoOrigin = port === '8000';
+      window.__API_BASE__ = isDjangoOrigin
+        ? origin + '/api'
+        : `${protocol}//${hostname}:8000/api`;
+    })();
+  </script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
