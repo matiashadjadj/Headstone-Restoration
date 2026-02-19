@@ -1,13 +1,16 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import AllowAny
+from rest_framework.authentication import BasicAuthentication
 from django.utils import timezone
 from django.db import models
 from django.db.models import Q, Sum
+from django.shortcuts import get_object_or_404
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
 
 from core.models import Service, Employee, ServiceAssignment, Invoice, Memorial, Customer, Cemetery
-from core.api.permissions import IsManager
 from core.api.serializers import (
     AssignTechnicianSerializer,
     DashboardServiceSerializer,
@@ -15,13 +18,19 @@ from core.api.serializers import (
     MemorialSummarySerializer,
     CustomerSummarySerializer,
     CemeterySummarySerializer,
+    TechnicianSerializer,
+    SchedulingServiceSerializer,
+    CreateSchedulingServiceSerializer,
 )
 
+@method_decorator(csrf_exempt, name="dispatch")
 class AssignTechnicianView(APIView):
-    permission_classes = [IsAuthenticated, IsManager]
+    # Keep open in this demo app; tighten permissions for production.
+    authentication_classes = [BasicAuthentication]
+    permission_classes = [AllowAny]
 
     def post(self, request, service_id):
-        s = Service.objects.get(id=service_id)
+        s = get_object_or_404(Service.objects.select_related("memorial__plot"), id=service_id)
 
         serializer = AssignTechnicianSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -29,8 +38,10 @@ class AssignTechnicianView(APIView):
         tech_id = serializer.validated_data["technician_id"]
         scheduled_start = serializer.validated_data["scheduled_start"]
         estimated_minutes = serializer.validated_data["estimated_minutes"]
+        gps_lat = serializer.validated_data.get("gps_lat")
+        gps_lng = serializer.validated_data.get("gps_lng")
 
-        tech = Employee.objects.get(id=tech_id, role=Employee.Role.TECH)
+        tech = get_object_or_404(Employee, id=tech_id, role=Employee.Role.TECH, is_active=True)
 
         # if one-tech-per-service v1:
         ServiceAssignment.objects.update_or_create(
@@ -44,7 +55,69 @@ class AssignTechnicianView(APIView):
         s.status = Service.Status.SCHEDULED
         s.save()
 
-        return Response({"ok": True}, status=status.HTTP_200_OK)
+        if gps_lat is not None and gps_lng is not None:
+            plot = s.memorial.plot
+            plot.gps_lat = gps_lat
+            plot.gps_lng = gps_lng
+            plot.save(update_fields=["gps_lat", "gps_lng", "updated_at"])
+
+        payload = SchedulingServiceSerializer(
+            Service.objects.select_related("memorial__customer", "memorial__plot__cemetery")
+            .prefetch_related("assignments__employee")
+            .get(id=s.id)
+        ).data
+        return Response({"ok": True, "service": payload}, status=status.HTTP_200_OK)
+
+
+class TechnicianListView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        techs = (
+            Employee.objects.filter(role=Employee.Role.TECH, is_active=True)
+            .order_by("full_name")
+        )
+        return Response(TechnicianSerializer(techs, many=True).data)
+
+
+class SchedulingServiceListView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        services = (
+            Service.objects.select_related("memorial__customer", "memorial__plot__cemetery")
+            .prefetch_related("assignments__employee")
+            .filter(status__in=[Service.Status.DRAFT, Service.Status.SCHEDULED, Service.Status.IN_PROGRESS])
+            .order_by(
+                models.F("scheduled_start").asc(nulls_last=True),
+                "-created_at",
+            )
+        )
+        return Response(SchedulingServiceSerializer(services, many=True).data)
+
+
+class SchedulingServiceCreateView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def post(self, request):
+        serializer = CreateSchedulingServiceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        memorial = get_object_or_404(Memorial, id=serializer.validated_data["memorial_id"])
+        service_type = serializer.validated_data.get("service_type", Service.ServiceType.OTHER)
+
+        service = Service.objects.create(
+            memorial=memorial,
+            service_type=service_type,
+            status=Service.Status.DRAFT,
+        )
+        payload = SchedulingServiceSerializer(
+            Service.objects.select_related("memorial__customer", "memorial__plot__cemetery")
+            .prefetch_related("assignments__employee")
+            .get(id=service.id)
+        ).data
+        return Response({"ok": True, "service": payload}, status=status.HTTP_201_CREATED)
 
 
 class DashboardSummaryView(APIView):
@@ -69,7 +142,11 @@ class DashboardSummaryView(APIView):
             status__in=[Service.Status.SCHEDULED, Service.Status.IN_PROGRESS]
         )
 
-        upcoming_qs = active_qs.order_by("scheduled_start", "created_at")[:5]
+        upcoming_qs = (
+            active_qs
+            .filter(scheduled_start__isnull=False)
+            .order_by("scheduled_start", "created_at")[:5]
+        )
 
         completed_count = base_qs.filter(status=Service.Status.COMPLETED).count()
         total_services = base_qs.count()

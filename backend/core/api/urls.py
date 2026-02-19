@@ -5,6 +5,9 @@ from .views import (
     MemorialListView,
     CustomerListView,
     CemeteryListView,
+    TechnicianListView,
+    SchedulingServiceListView,
+    SchedulingServiceCreateView,
 )
 
 urlpatterns = [
@@ -12,5 +15,8 @@ urlpatterns = [
     path("memorials/", MemorialListView.as_view(), name="memorial-list"),
     path("customers/", CustomerListView.as_view(), name="customer-list"),
     path("cemeteries/", CemeteryListView.as_view(), name="cemetery-list"),
+    path("technicians/", TechnicianListView.as_view(), name="technician-list"),
+    path("scheduling/services/", SchedulingServiceListView.as_view(), name="scheduling-service-list"),
+    path("scheduling/services/create/", SchedulingServiceCreateView.as_view(), name="scheduling-service-create"),
     path("manager/services/<int:service_id>/assign/", AssignTechnicianView.as_view()),
 ]

@@ -88,6 +88,17 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
+# Django CSRF origin checks for browser POSTs from the frontend dev server.
+# start.sh may auto-pick ports above 5173, so trust that local range.
+CSRF_TRUSTED_ORIGINS = [
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+] + [
+    f"http://127.0.0.1:{port}" for port in range(5173, 5201)
+] + [
+    f"http://localhost:{port}" for port in range(5173, 5201)
+]
+
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases

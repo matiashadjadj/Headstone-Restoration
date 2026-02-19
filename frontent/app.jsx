@@ -66,8 +66,88 @@ function formatDateTimeShort(value) {
   });
 }
 
-function useApi(path, defaultValue, enabled = true) {
+function formatDateOnly(value) {
+  if (!value) return 'Unscheduled';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return 'Unscheduled';
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function toDateInputValue(value = new Date()) {
+  const dt = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(dt.getTime())) return '';
+  const year = dt.getFullYear();
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function toDatetimeLocalInput(value) {
+  if (!value) return '';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return '';
+  const tzOffsetMs = dt.getTimezoneOffset() * 60 * 1000;
+  const local = new Date(dt.getTime() - tzOffsetMs);
+  return local.toISOString().slice(0, 16);
+}
+
+function datetimeLocalToIso(value) {
+  if (!value) return '';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return '';
+  return dt.toISOString();
+}
+
+const SCHEDULING_DATE_KEY = 'hs_scheduling_calendar_date';
+
+function getStoredSchedulingDate() {
+  try {
+    const value = localStorage.getItem(SCHEDULING_DATE_KEY);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return value;
+  } catch (err) {
+    // ignore storage errors
+  }
+  return toDateInputValue(new Date());
+}
+
+function parseCoordinate(rawValue, kind) {
+  const raw = String(rawValue || '').trim();
+  if (!raw) return { ok: false, error: `Missing ${kind === 'lat' ? 'latitude' : 'longitude'}.` };
+
+  const upper = raw.toUpperCase();
+  const hasSouthOrWest = /[SW]/.test(upper);
+  const hasNorthOrEast = /[NE]/.test(upper);
+
+  // Allow inputs such as: "40.730610", "40.730610 N", "40.730610° N"
+  const numberMatch = upper.match(/-?\d+(?:\.\d+)?/);
+  if (!numberMatch) {
+    return { ok: false, error: `Invalid ${kind === 'lat' ? 'latitude' : 'longitude'} format.` };
+  }
+
+  let value = Number(numberMatch[0]);
+  if (!Number.isFinite(value)) {
+    return { ok: false, error: `Invalid ${kind === 'lat' ? 'latitude' : 'longitude'} value.` };
+  }
+
+  if (hasSouthOrWest) value = -Math.abs(value);
+  if (hasNorthOrEast) value = Math.abs(value);
+
+  const min = kind === 'lat' ? -90 : -180;
+  const max = kind === 'lat' ? 90 : 180;
+  if (value < min || value > max) {
+    return {
+      ok: false,
+      error: `${kind === 'lat' ? 'Latitude' : 'Longitude'} must be between ${min} and ${max}.`
+    };
+  }
+
+  return { ok: true, value: Number(value.toFixed(6)) };
+}
+
+function useApi(path, defaultValue, enabled = true, options = {}) {
+  const refreshEvent = options.refreshEvent || '';
   const [state, setState] = useState({ loading: true, error: null, data: defaultValue });
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,7 +166,16 @@ function useApi(path, defaultValue, enabled = true) {
     }
     load();
     return () => { cancelled = true; };
-  }, [path, enabled]);
+  }, [path, enabled, reloadToken]);
+
+  useEffect(() => {
+    if (!refreshEvent) return undefined;
+    function handleRefresh() {
+      setReloadToken((value) => value + 1);
+    }
+    window.addEventListener(refreshEvent, handleRefresh);
+    return () => window.removeEventListener(refreshEvent, handleRefresh);
+  }, [refreshEvent]);
 
   return state;
 }
@@ -95,7 +184,8 @@ function useDashboardData(enabled) {
   const { loading, error, data } = useApi(
     '/dashboard/summary/',
     { summary: null, upcoming_services: [], recent_completed: [] },
-    enabled
+    enabled,
+    { refreshEvent: 'hs:schedule-updated' }
   );
   return {
     loading,
@@ -132,6 +222,15 @@ const ROUTES = {
     settings: CustomerSettingsPage
   }
 };
+
+const SERVICE_TYPE_OPTIONS = [
+  { value: 'cleaning', label: 'Cleaning' },
+  { value: 'reset', label: 'Reset' },
+  { value: 'leveling', label: 'Leveling' },
+  { value: 'repair', label: 'Repair' },
+  { value: 'engraving', label: 'Engraving' },
+  { value: 'other', label: 'Other' }
+];
 
 function getStoredRole() {
   try {
@@ -379,11 +478,402 @@ function MemorialsPage() {
 }
 
 function SchedulingPage() {
+  const servicesState = useApi('/scheduling/services/', []);
+  const techState = useApi('/technicians/', []);
+  const memorialState = useApi('/memorials/', []);
+
+  const [services, setServices] = useState([]);
+  const [selectedServiceId, setSelectedServiceId] = useState('');
+  const [technicianId, setTechnicianId] = useState('');
+  const [scheduledStart, setScheduledStart] = useState('');
+  const [estimatedMinutes, setEstimatedMinutes] = useState('90');
+  const [gpsLat, setGpsLat] = useState('');
+  const [gpsLng, setGpsLng] = useState('');
+  const [calendarDate, setCalendarDate] = useState(getStoredSchedulingDate);
+  const [submitState, setSubmitState] = useState({ loading: false, error: '', success: '' });
+  const [createMemorialId, setCreateMemorialId] = useState('');
+  const [createServiceType, setCreateServiceType] = useState('cleaning');
+  const [createState, setCreateState] = useState({ loading: false, error: '', success: '' });
+
+  useEffect(() => {
+    setServices(Array.isArray(servicesState.data) ? servicesState.data : []);
+  }, [servicesState.data]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SCHEDULING_DATE_KEY, calendarDate);
+    } catch (err) {
+      // ignore storage errors
+    }
+  }, [calendarDate]);
+
+  const selectedService = useMemo(
+    () => services.find((s) => String(s.id) === String(selectedServiceId)) || null,
+    [services, selectedServiceId]
+  );
+
+  useEffect(() => {
+    if (!services.length) return;
+    if (selectedServiceId && selectedService) return;
+
+    const preferred = services.find((s) => s.status === 'draft') || services[0];
+    setSelectedServiceId(String(preferred.id));
+    setTechnicianId(preferred.technician_id ? String(preferred.technician_id) : '');
+    setScheduledStart(toDatetimeLocalInput(preferred.scheduled_start));
+    setEstimatedMinutes(preferred.estimated_minutes ? String(preferred.estimated_minutes) : '90');
+    setGpsLat(preferred.gps_lat != null ? String(preferred.gps_lat) : '');
+    setGpsLng(preferred.gps_lng != null ? String(preferred.gps_lng) : '');
+  }, [services, selectedServiceId, selectedService]);
+
+  useEffect(() => {
+    if (!services.length) return;
+    const hasAnyOnSelectedDate = services.some(
+      (svc) => svc.scheduled_start && toDateInputValue(svc.scheduled_start) === calendarDate
+    );
+    if (hasAnyOnSelectedDate) return;
+
+    const firstScheduled = services.find((svc) => Boolean(svc.scheduled_start));
+    if (firstScheduled) {
+      setCalendarDate(toDateInputValue(firstScheduled.scheduled_start));
+    }
+  }, [services, calendarDate]);
+
+  function syncFormFromService(serviceId) {
+    const svc = services.find((item) => String(item.id) === String(serviceId));
+    if (!svc) return;
+    setSelectedServiceId(String(svc.id));
+    setTechnicianId(svc.technician_id ? String(svc.technician_id) : '');
+    setScheduledStart(toDatetimeLocalInput(svc.scheduled_start));
+    setEstimatedMinutes(svc.estimated_minutes ? String(svc.estimated_minutes) : '90');
+    setGpsLat(svc.gps_lat != null ? String(svc.gps_lat) : '');
+    setGpsLng(svc.gps_lng != null ? String(svc.gps_lng) : '');
+    setSubmitState({ loading: false, error: '', success: '' });
+  }
+
+  async function handleAssign(event) {
+    event.preventDefault();
+    setSubmitState({ loading: true, error: '', success: '' });
+
+    if (!selectedServiceId) {
+      setSubmitState({ loading: false, error: 'Select a job to schedule.', success: '' });
+      return;
+    }
+    if (!technicianId) {
+      setSubmitState({ loading: false, error: 'Select a technician.', success: '' });
+      return;
+    }
+    if (!scheduledStart) {
+      setSubmitState({ loading: false, error: 'Pick a scheduled start time.', success: '' });
+      return;
+    }
+
+    const gpsLatValue = gpsLat.trim();
+    const gpsLngValue = gpsLng.trim();
+    if ((gpsLatValue && !gpsLngValue) || (!gpsLatValue && gpsLngValue)) {
+      setSubmitState({ loading: false, error: 'Provide both GPS latitude and longitude.', success: '' });
+      return;
+    }
+
+    const payload = {
+      technician_id: Number(technicianId),
+      scheduled_start: datetimeLocalToIso(scheduledStart),
+      estimated_minutes: Number(estimatedMinutes) || 90
+    };
+    if (gpsLatValue && gpsLngValue) {
+      const parsedLat = parseCoordinate(gpsLatValue, 'lat');
+      const parsedLng = parseCoordinate(gpsLngValue, 'lng');
+      if (!parsedLat.ok || !parsedLng.ok) {
+        setSubmitState({
+          loading: false,
+          error: parsedLat.error || parsedLng.error || 'Invalid GPS coordinates.',
+          success: ''
+        });
+        return;
+      }
+      payload.gps_lat = parsedLat.value;
+      payload.gps_lng = parsedLng.value;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/manager/services/${selectedServiceId}/assign/`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Assign failed (${res.status})`);
+      }
+      const json = await res.json();
+      if (json.service) {
+        setServices((prev) => prev.map((item) => (item.id === json.service.id ? json.service : item)));
+        setCalendarDate(toDateInputValue(json.service.scheduled_start || new Date()));
+        syncFormFromService(json.service.id);
+      }
+      window.dispatchEvent(new Event('hs:schedule-updated'));
+      setSubmitState({ loading: false, error: '', success: 'Schedule saved.' });
+    } catch (err) {
+      setSubmitState({ loading: false, error: err.message || 'Failed to save schedule.', success: '' });
+    }
+  }
+
+  async function handleCreateJob(event) {
+    event.preventDefault();
+    setCreateState({ loading: true, error: '', success: '' });
+    if (!createMemorialId) {
+      setCreateState({ loading: false, error: 'Select a memorial.', success: '' });
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/scheduling/services/create/`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          memorial_id: Number(createMemorialId),
+          service_type: createServiceType
+        })
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Create failed (${res.status})`);
+      }
+      const json = await res.json();
+      if (json.service) {
+        setServices((prev) => [json.service, ...prev]);
+        syncFormFromService(json.service.id);
+      }
+      setCreateState({ loading: false, error: '', success: 'Job created. Now assign it below.' });
+    } catch (err) {
+      setCreateState({ loading: false, error: err.message || 'Failed to create job.', success: '' });
+    }
+  }
+
+  const scheduledForDay = useMemo(() => {
+    return services
+      .filter((svc) => svc.scheduled_start && toDateInputValue(svc.scheduled_start) === calendarDate)
+      .sort((a, b) => new Date(a.scheduled_start) - new Date(b.scheduled_start));
+  }, [services, calendarDate]);
+
+  const unscheduledCount = useMemo(
+    () => services.filter((svc) => !svc.scheduled_start || svc.status === 'draft').length,
+    [services]
+  );
+
   return (
     <>
       <h1 className="page-title">Scheduling</h1>
-      <p className="page-subtitle">Upcoming and recurring restoration services.</p>
-      <div className="card"><p className="meta">Connect a calendar endpoint to display schedule.</p></div>
+      <p className="page-subtitle">Assign technicians, set GPS coordinates, and schedule restoration jobs.</p>
+
+      {(servicesState.error || techState.error || memorialState.error) && (
+        <div className="card warn">
+          Backend error: {servicesState.error || techState.error || memorialState.error}
+        </div>
+      )}
+
+      <section className="kpis">
+        <div className="kpi">
+          <span className="kpi-label">Jobs Loaded</span>
+          <strong>{services.length}</strong>
+          <small>{servicesState.loading ? 'Loading...' : 'From scheduling API'}</small>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">Unscheduled</span>
+          <strong>{unscheduledCount}</strong>
+          <small>Needs admin assignment</small>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">Technicians</span>
+          <strong>{Array.isArray(techState.data) ? techState.data.length : 0}</strong>
+          <small>Active tech accounts</small>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">Calendar Date</span>
+          <strong>{calendarDate || '—'}</strong>
+          <small>{scheduledForDay.length} jobs on selected day</small>
+        </div>
+      </section>
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <h3>Calendar</h3>
+            <input
+              type="date"
+              value={calendarDate}
+              onChange={(event) => setCalendarDate(event.target.value)}
+            />
+          </div>
+          {scheduledForDay.length === 0 && <p className="meta">No jobs scheduled for this date.</p>}
+          {scheduledForDay.length > 0 && (
+            <ul className="service-list">
+              {scheduledForDay.map((svc) => (
+                <li key={svc.id}>
+                  <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
+                  <span>{svc.cemetery_name || 'No cemetery'}</span>
+                  <div className="meta">
+                    {formatDateTimeShort(svc.scheduled_start)} · {svc.technician_name || 'Unassigned'} · {svc.estimated_minutes || 0} min
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="card">
+          <h3>Create Job</h3>
+          <form className="form" onSubmit={handleCreateJob}>
+            <label>Memorial</label>
+            <select
+              value={createMemorialId}
+              onChange={(event) => setCreateMemorialId(event.target.value)}
+              required
+            >
+              <option value="">Select memorial</option>
+              {(memorialState.data || []).map((m) => (
+                <option key={m.id} value={m.id}>
+                  #{m.id} · {m.customer || 'Customer'} · {m.cemetery || 'Cemetery'}
+                </option>
+              ))}
+            </select>
+
+            <label>Service Type</label>
+            <select
+              value={createServiceType}
+              onChange={(event) => setCreateServiceType(event.target.value)}
+            >
+              {SERVICE_TYPE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+
+            {createState.error && <div className="form-error">{createState.error}</div>}
+            {createState.success && <div className="card form-success"><strong>{createState.success}</strong></div>}
+            <button className="primary-btn" type="submit" disabled={createState.loading || memorialState.loading}>
+              {createState.loading ? 'Creating...' : 'Create Job'}
+            </button>
+          </form>
+        </div>
+
+        <div className="card">
+          <h3>Assign Technician</h3>
+          <form className="form" onSubmit={handleAssign}>
+            <label>Job</label>
+            <select
+              value={selectedServiceId}
+              onChange={(event) => syncFormFromService(event.target.value)}
+              required
+            >
+              <option value="">Select a job</option>
+              {services.map((svc) => (
+                <option key={svc.id} value={svc.id}>
+                  #{svc.id} · {svc.memorial_name || 'Memorial'} · {svc.status}
+                </option>
+              ))}
+            </select>
+
+            <label>Technician</label>
+            <select
+              value={technicianId}
+              onChange={(event) => setTechnicianId(event.target.value)}
+              required
+            >
+              <option value="">Select technician</option>
+              {(techState.data || []).map((tech) => (
+                <option key={tech.id} value={tech.id}>{tech.full_name}</option>
+              ))}
+            </select>
+
+            <label>Start Time</label>
+            <input
+              type="datetime-local"
+              value={scheduledStart}
+              onChange={(event) => setScheduledStart(event.target.value)}
+              required
+            />
+
+            <label>Estimated Minutes</label>
+            <input
+              type="number"
+              min="1"
+              max="1440"
+              value={estimatedMinutes}
+              onChange={(event) => setEstimatedMinutes(event.target.value)}
+              required
+            />
+
+            <label>GPS Latitude</label>
+            <input
+              type="text"
+              placeholder="e.g. 40.730610 or 40.730610 N"
+              value={gpsLat}
+              onChange={(event) => setGpsLat(event.target.value)}
+            />
+
+            <label>GPS Longitude</label>
+            <input
+              type="text"
+              placeholder="e.g. -73.935242 or 73.935242 W"
+              value={gpsLng}
+              onChange={(event) => setGpsLng(event.target.value)}
+            />
+
+            {submitState.error && <div className="form-error">{submitState.error}</div>}
+            {submitState.success && <div className="card form-success"><strong>{submitState.success}</strong></div>}
+            <button className="primary-btn" type="submit" disabled={submitState.loading}>
+              {submitState.loading ? 'Saving...' : 'Save Schedule'}
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <div className="card">
+        <h3>All Jobs</h3>
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Memorial</th>
+                <th>Cemetery</th>
+                <th>Status</th>
+                <th>When</th>
+                <th>Technician</th>
+                <th>GPS</th>
+              </tr>
+            </thead>
+            <tbody>
+              {servicesState.loading && (
+                <tr><td colSpan="7" className="meta">Loading jobs...</td></tr>
+              )}
+              {!servicesState.loading && services.length === 0 && (
+                <tr><td colSpan="7" className="meta">No jobs found. Create services in Django admin first.</td></tr>
+              )}
+              {!servicesState.loading && services.map((svc) => (
+                <tr
+                  key={svc.id}
+                  className="clickable-row"
+                  onClick={() => syncFormFromService(svc.id)}
+                >
+                  <td>#{svc.id}</td>
+                  <td>{svc.memorial_name || '—'}</td>
+                  <td>{svc.cemetery_name || '—'}</td>
+                  <td><span className="tag">{svc.status || '—'}</span></td>
+                  <td>{formatDateTimeShort(svc.scheduled_start)}</td>
+                  <td>{svc.technician_name || 'Unassigned'}</td>
+                  <td>
+                    {svc.gps_lat != null && svc.gps_lng != null
+                      ? `${svc.gps_lat}, ${svc.gps_lng}`
+                      : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </>
   );
 }
