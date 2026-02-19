@@ -12,6 +12,7 @@ const ROLE_CONFIGS = {
       { id: 'customers', label: 'Customers', to: '/admin/customers' },
       { id: 'cemeteries', label: 'Cemeteries', to: '/admin/cemeteries' },
       { id: 'archive', label: 'Photos & Archive', to: '/admin/archive' },
+      { id: 'emails', label: 'Emails', to: '/admin/emails' },
       { id: 'reports', label: 'Reports', to: '/admin/reports' },
       { id: 'settings', label: 'Settings', to: '/admin/settings' }
     ]
@@ -204,6 +205,7 @@ const ROUTES = {
     customers: CustomersPage,
     cemeteries: CemeteriesPage,
     archive: ArchivePage,
+    emails: EmailsPage,
     reports: ReportsPage,
     settings: SettingsPage,
     onboarding: OnboardingPage
@@ -976,8 +978,181 @@ function ReportsPage() {
   );
 }
 
+function EmailsPage() {
+  const customerState = useApi('/customers/', []);
+  const [selectedCustomerIds, setSelectedCustomerIds] = useState([]);
+  const [subject, setSubject] = useState('Service update for {{client_name}}');
+  const [body, setBody] = useState(
+    'Hello {{client_name}},\n\n'
+    + 'This is an update from Headstone Restoration regarding your memorial service.\n'
+    + 'We will follow up with your scheduling details shortly.\n\n'
+    + 'Best regards,\n'
+    + 'Headstone Restoration'
+  );
+  const [sendState, setSendState] = useState({ loading: false, error: '', result: null });
+
+  const customersWithEmail = useMemo(
+    () => (customerState.data || []).filter((c) => Boolean(c.email)),
+    [customerState.data]
+  );
+
+  function toggleCustomer(customerId) {
+    setSelectedCustomerIds((prev) => {
+      if (prev.includes(customerId)) return prev.filter((id) => id !== customerId);
+      return [...prev, customerId];
+    });
+  }
+
+  function selectAll() {
+    setSelectedCustomerIds(customersWithEmail.map((c) => c.id));
+  }
+
+  function clearAll() {
+    setSelectedCustomerIds([]);
+  }
+
+  async function handleSend(event) {
+    event.preventDefault();
+    setSendState({ loading: true, error: '', result: null });
+
+    if (!selectedCustomerIds.length) {
+      setSendState({ loading: false, error: 'Select at least one customer.', result: null });
+      return;
+    }
+    if (!subject.trim() || !body.trim()) {
+      setSendState({ loading: false, error: 'Subject and body are required.', result: null });
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/emails/send/`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_ids: selectedCustomerIds,
+          subject,
+          body
+        })
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json.detail || `Send failed (${res.status})`);
+      }
+      setSendState({ loading: false, error: '', result: json });
+    } catch (err) {
+      setSendState({ loading: false, error: err.message || 'Failed to send emails.', result: null });
+    }
+  }
+
+  return (
+    <>
+      <h1 className="page-title">Email Center</h1>
+      <p className="page-subtitle">Send personalized client emails from headstone@restoration.com.</p>
+
+      {customerState.error && <div className="card warn">Backend error: {customerState.error}</div>}
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <h3>Recipients</h3>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button className="ghost-btn" type="button" onClick={selectAll}>Select All</button>
+              <button className="ghost-btn" type="button" onClick={clearAll}>Clear</button>
+            </div>
+          </div>
+          <p className="meta">
+            {selectedCustomerIds.length} selected / {customersWithEmail.length} with email addresses
+          </p>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Pick</th>
+                  <th>Customer</th>
+                  <th>Email</th>
+                </tr>
+              </thead>
+              <tbody>
+                {customerState.loading && (
+                  <tr><td colSpan="3" className="meta">Loading customers...</td></tr>
+                )}
+                {!customerState.loading && customersWithEmail.length === 0 && (
+                  <tr><td colSpan="3" className="meta">No customers with emails found.</td></tr>
+                )}
+                {!customerState.loading && customersWithEmail.map((customer) => (
+                  <tr key={customer.id}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selectedCustomerIds.includes(customer.id)}
+                        onChange={() => toggleCustomer(customer.id)}
+                      />
+                    </td>
+                    <td>{customer.full_name}</td>
+                    <td>{customer.email}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="card">
+          <h3>Compose</h3>
+          <form className="form" onSubmit={handleSend}>
+            <label>Subject</label>
+            <input
+              type="text"
+              value={subject}
+              onChange={(event) => setSubject(event.target.value)}
+              placeholder="Subject"
+            />
+
+            <label>Body</label>
+            <textarea
+              value={body}
+              onChange={(event) => setBody(event.target.value)}
+              rows={10}
+              style={{ padding: '10px', borderRadius: '8px', border: '1px solid #e5e7eb' }}
+            />
+
+            <p className="meta">Tokens: {'{{client_name}}'}, {'{{customer_name}}'}, {'{{first_name}}'}, {'{{email}}'}</p>
+
+            {sendState.error && <div className="form-error">{sendState.error}</div>}
+            <button className="primary-btn" type="submit" disabled={sendState.loading}>
+              {sendState.loading ? 'Sending...' : 'Send Emails'}
+            </button>
+          </form>
+        </div>
+      </section>
+
+      {sendState.result && (
+        <div className="card">
+          <h3>Send Result</h3>
+          <p className="meta">From: {sendState.result.from_email}</p>
+          <p className="meta">
+            Sent: {sendState.result.sent_count} · Skipped: {sendState.result.skipped_count} · Failed: {sendState.result.failed_count}
+          </p>
+          {sendState.result.failed_count > 0 && (
+            <div className="form-error">Some emails failed. Check backend logs/SMTP configuration.</div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
 function SettingsPage() {
-  return null;
+  return (
+    <>
+      <h1 className="page-title">Settings</h1>
+      <p className="page-subtitle">General application settings.</p>
+      <div className="card">
+        <p className="meta">Use the Emails section for customer email outreach.</p>
+      </div>
+    </>
+  );
 }
 
 function OnboardingPage() {

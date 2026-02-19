@@ -148,3 +148,12 @@ class SchedulingServiceSerializer(serializers.ModelSerializer):
 class CreateSchedulingServiceSerializer(serializers.Serializer):
     memorial_id = serializers.IntegerField()
     service_type = serializers.ChoiceField(choices=Service.ServiceType.choices, required=False)
+
+
+class SendCustomerEmailSerializer(serializers.Serializer):
+    customer_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        allow_empty=False,
+    )
+    subject = serializers.CharField(max_length=200)
+    body = serializers.CharField()

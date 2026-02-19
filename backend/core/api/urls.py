@@ -8,6 +8,7 @@ from .views import (
     TechnicianListView,
     SchedulingServiceListView,
     SchedulingServiceCreateView,
+    SendCustomerEmailView,
 )
 
 urlpatterns = [
@@ -18,5 +19,6 @@ urlpatterns = [
     path("technicians/", TechnicianListView.as_view(), name="technician-list"),
     path("scheduling/services/", SchedulingServiceListView.as_view(), name="scheduling-service-list"),
     path("scheduling/services/create/", SchedulingServiceCreateView.as_view(), name="scheduling-service-create"),
+    path("emails/send/", SendCustomerEmailView.as_view(), name="emails-send"),
     path("manager/services/<int:service_id>/assign/", AssignTechnicianView.as_view()),
 ]

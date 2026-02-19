@@ -9,6 +9,8 @@ from django.db.models import Q, Sum
 from django.shortcuts import get_object_or_404
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
+from django.conf import settings
+from django.core.mail import send_mail
 
 from core.models import Service, Employee, ServiceAssignment, Invoice, Memorial, Customer, Cemetery
 from core.api.serializers import (
@@ -21,6 +23,7 @@ from core.api.serializers import (
     TechnicianSerializer,
     SchedulingServiceSerializer,
     CreateSchedulingServiceSerializer,
+    SendCustomerEmailSerializer,
 )
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -118,6 +121,90 @@ class SchedulingServiceCreateView(APIView):
             .get(id=service.id)
         ).data
         return Response({"ok": True, "service": payload}, status=status.HTTP_201_CREATED)
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class SendCustomerEmailView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    @staticmethod
+    def _render_template(template: str, customer: Customer) -> str:
+        full_name = customer.full_name or ""
+        first_name = full_name.split(" ")[0] if full_name else "Client"
+        replacements = {
+            "{{client_name}}": full_name or "Client",
+            "{{customer_name}}": full_name or "Client",
+            "{{first_name}}": first_name,
+            "{{email}}": customer.email or "",
+        }
+        result = template
+        for token, value in replacements.items():
+            result = result.replace(token, value)
+        return result
+
+    def post(self, request):
+        serializer = SendCustomerEmailSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        customer_ids = serializer.validated_data["customer_ids"]
+        subject_template = serializer.validated_data["subject"]
+        body_template = serializer.validated_data["body"]
+
+        customers = {
+            c.id: c for c in Customer.objects.filter(id__in=customer_ids)
+        }
+
+        missing_ids = [cid for cid in customer_ids if cid not in customers]
+        if missing_ids:
+            return Response(
+                {"detail": f"Unknown customer IDs: {missing_ids}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "headstone@restoration.com")
+        sent = []
+        skipped = []
+        failed = []
+
+        for customer_id in customer_ids:
+            customer = customers[customer_id]
+            if not customer.email:
+                skipped.append({"customer_id": customer.id, "name": customer.full_name, "reason": "missing_email"})
+                continue
+
+            rendered_subject = self._render_template(subject_template, customer)
+            rendered_body = self._render_template(body_template, customer)
+            try:
+                send_mail(
+                    subject=rendered_subject,
+                    message=rendered_body,
+                    from_email=from_email,
+                    recipient_list=[customer.email],
+                    fail_silently=False,
+                )
+                sent.append({"customer_id": customer.id, "name": customer.full_name, "email": customer.email})
+            except Exception as exc:  # pragma: no cover - defensive for SMTP runtime failures
+                failed.append({
+                    "customer_id": customer.id,
+                    "name": customer.full_name,
+                    "email": customer.email,
+                    "error": str(exc),
+                })
+
+        return Response(
+            {
+                "ok": len(failed) == 0,
+                "from_email": from_email,
+                "sent_count": len(sent),
+                "skipped_count": len(skipped),
+                "failed_count": len(failed),
+                "sent": sent,
+                "skipped": skipped,
+                "failed": failed,
+            },
+            status=status.HTTP_200_OK if len(failed) == 0 else status.HTTP_207_MULTI_STATUS,
+        )
 
 
 class DashboardSummaryView(APIView):
