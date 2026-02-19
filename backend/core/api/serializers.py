@@ -1,3 +1,4 @@
+from django.contrib.auth.models import User
 from rest_framework import serializers
 from core.models import Service, ServiceAssignment, Photo, Employee, Memorial, Customer, Cemetery
 
@@ -157,3 +158,51 @@ class SendCustomerEmailSerializer(serializers.Serializer):
     )
     subject = serializers.CharField(max_length=200)
     body = serializers.CharField()
+
+
+class CustomerUpsertSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Customer
+        fields = [
+            "full_name",
+            "email",
+            "phone",
+            "address_line1",
+            "address_line2",
+            "city",
+            "state",
+            "postal_code",
+            "notes",
+        ]
+
+
+class EmployeeRoleSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source="user.username", read_only=True)
+
+    class Meta:
+        model = Employee
+        fields = ["id", "username", "full_name", "email", "phone", "role", "is_active"]
+
+
+class EmployeeRoleUpdateSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(choices=Employee.Role.choices, required=False)
+    is_active = serializers.BooleanField(required=False)
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError("Provide at least one field to update.")
+        return attrs
+
+
+class EmployeeCreateSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=150)
+    password = serializers.CharField(max_length=128)
+    full_name = serializers.CharField(max_length=255)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    phone = serializers.CharField(max_length=30, required=False, allow_blank=True)
+    role = serializers.ChoiceField(choices=Employee.Role.choices, required=False)
+
+    def validate_username(self, value):
+        if User.objects.filter(username=value).exists():
+            raise serializers.ValidationError("Username already exists.")
+        return value

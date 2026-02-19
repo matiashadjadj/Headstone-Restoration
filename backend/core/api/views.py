@@ -4,13 +4,14 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.authentication import BasicAuthentication
 from django.utils import timezone
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.shortcuts import get_object_or_404
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 from django.core.mail import send_mail
+from django.contrib.auth.models import User
 
 from core.models import Service, Employee, ServiceAssignment, Invoice, Memorial, Customer, Cemetery
 from core.api.serializers import (
@@ -24,6 +25,10 @@ from core.api.serializers import (
     SchedulingServiceSerializer,
     CreateSchedulingServiceSerializer,
     SendCustomerEmailSerializer,
+    CustomerUpsertSerializer,
+    EmployeeRoleSerializer,
+    EmployeeRoleUpdateSerializer,
+    EmployeeCreateSerializer,
 )
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -205,6 +210,123 @@ class SendCustomerEmailView(APIView):
             },
             status=status.HTTP_200_OK if len(failed) == 0 else status.HTTP_207_MULTI_STATUS,
         )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class CustomerManageListCreateView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def get(self, request):
+        qs = (
+            Customer.objects.annotate(
+                memorials_count=models.Count("memorials", distinct=True),
+                last_contact=models.Max("memorials__services__completed_date"),
+            )
+            .order_by("full_name")
+        )
+        return Response(CustomerSummarySerializer(qs, many=True).data)
+
+    def post(self, request):
+        serializer = CustomerUpsertSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        customer = serializer.save()
+        customer_payload = (
+            Customer.objects.filter(id=customer.id)
+            .annotate(
+                memorials_count=models.Count("memorials", distinct=True),
+                last_contact=models.Max("memorials__services__completed_date"),
+            )
+            .first()
+        )
+        return Response(
+            {"ok": True, "customer": CustomerSummarySerializer(customer_payload).data},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class CustomerManageDetailView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def patch(self, request, customer_id):
+        customer = get_object_or_404(Customer, id=customer_id)
+        serializer = CustomerUpsertSerializer(customer, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        customer = serializer.save()
+        customer_payload = (
+            Customer.objects.filter(id=customer.id)
+            .annotate(
+                memorials_count=models.Count("memorials", distinct=True),
+                last_contact=models.Max("memorials__services__completed_date"),
+            )
+            .first()
+        )
+        return Response(
+            {"ok": True, "customer": CustomerSummarySerializer(customer_payload).data},
+            status=status.HTTP_200_OK,
+        )
+
+    def delete(self, request, customer_id):
+        customer = get_object_or_404(Customer, id=customer_id)
+        customer.delete()
+        return Response({"ok": True}, status=status.HTTP_200_OK)
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class EmployeeRoleListView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def get(self, request):
+        employees = Employee.objects.select_related("user").order_by("full_name")
+        return Response(EmployeeRoleSerializer(employees, many=True).data)
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class EmployeeRoleDetailView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def patch(self, request, employee_id):
+        employee = get_object_or_404(Employee, id=employee_id)
+        serializer = EmployeeRoleUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        if "role" in serializer.validated_data:
+            employee.role = serializer.validated_data["role"]
+        if "is_active" in serializer.validated_data:
+            employee.is_active = serializer.validated_data["is_active"]
+        employee.save(update_fields=["role", "is_active", "updated_at"])
+        return Response({"ok": True, "employee": EmployeeRoleSerializer(employee).data}, status=status.HTTP_200_OK)
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class EmployeeCreateView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def post(self, request):
+        serializer = EmployeeCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        role = serializer.validated_data.get("role", Employee.Role.TECH)
+
+        with transaction.atomic():
+            user = User.objects.create_user(
+                username=serializer.validated_data["username"],
+                password=serializer.validated_data["password"],
+            )
+            employee = Employee.objects.create(
+                user=user,
+                full_name=serializer.validated_data["full_name"],
+                email=serializer.validated_data.get("email", ""),
+                phone=serializer.validated_data.get("phone", ""),
+                role=role,
+                is_active=True,
+            )
+
+        return Response({"ok": True, "employee": EmployeeRoleSerializer(employee).data}, status=status.HTTP_201_CREATED)
 
 
 class DashboardSummaryView(APIView):

@@ -9,6 +9,7 @@ const ROLE_CONFIGS = {
       { id: 'dashboard', label: 'Dashboard', to: '/admin/dashboard' },
       { id: 'memorials', label: 'Memorials', to: '/admin/memorials' },
       { id: 'scheduling', label: 'Scheduling', to: '/admin/scheduling' },
+      { id: 'users', label: 'Users & Roles', to: '/admin/users' },
       { id: 'customers', label: 'Customers', to: '/admin/customers' },
       { id: 'cemeteries', label: 'Cemeteries', to: '/admin/cemeteries' },
       { id: 'archive', label: 'Photos & Archive', to: '/admin/archive' },
@@ -202,6 +203,7 @@ const ROUTES = {
     dashboard: DashboardPage,
     memorials: MemorialsPage,
     scheduling: SchedulingPage,
+    users: UsersAdminPage,
     customers: CustomersPage,
     cemeteries: CemeteriesPage,
     archive: ArchivePage,
@@ -880,42 +882,301 @@ function SchedulingPage() {
   );
 }
 
+function UsersAdminPage() {
+  const employeesState = useApi('/manage/employees/', []);
+  const [employees, setEmployees] = useState([]);
+  const [roleDrafts, setRoleDrafts] = useState({});
+  const [activeDrafts, setActiveDrafts] = useState({});
+  const [createForm, setCreateForm] = useState({
+    username: '',
+    password: '',
+    full_name: '',
+    email: '',
+    phone: '',
+    role: 'tech'
+  });
+  const [createState, setCreateState] = useState({ loading: false, error: '', success: '' });
+  const [updateState, setUpdateState] = useState({ loadingId: null, error: '', success: '' });
+
+  useEffect(() => {
+    const rows = Array.isArray(employeesState.data) ? employeesState.data : [];
+    setEmployees(rows);
+    const nextRoles = {};
+    const nextActive = {};
+    rows.forEach((row) => {
+      nextRoles[row.id] = row.role;
+      nextActive[row.id] = Boolean(row.is_active);
+    });
+    setRoleDrafts(nextRoles);
+    setActiveDrafts(nextActive);
+  }, [employeesState.data]);
+
+  async function handleCreate(event) {
+    event.preventDefault();
+    setCreateState({ loading: true, error: '', success: '' });
+    try {
+      const res = await fetch(`${API_BASE}/manage/employees/create/`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(createForm)
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(JSON.stringify(json));
+      setEmployees((prev) => [...prev, json.employee].sort((a, b) => a.full_name.localeCompare(b.full_name)));
+      setCreateForm({ username: '', password: '', full_name: '', email: '', phone: '', role: 'tech' });
+      setCreateState({ loading: false, error: '', success: 'User created.' });
+    } catch (err) {
+      setCreateState({ loading: false, error: err.message || 'Failed to create user.', success: '' });
+    }
+  }
+
+  async function handleSaveRole(employeeId) {
+    setUpdateState({ loadingId: employeeId, error: '', success: '' });
+    try {
+      const payload = {
+        role: roleDrafts[employeeId],
+        is_active: Boolean(activeDrafts[employeeId])
+      };
+      const res = await fetch(`${API_BASE}/manage/employees/${employeeId}/`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(JSON.stringify(json));
+      setEmployees((prev) => prev.map((e) => (e.id === employeeId ? json.employee : e)));
+      setUpdateState({ loadingId: null, error: '', success: 'Role updated.' });
+    } catch (err) {
+      setUpdateState({ loadingId: null, error: err.message || 'Failed to update role.', success: '' });
+    }
+  }
+
+  return (
+    <>
+      <h1 className="page-title">Users & Roles</h1>
+      <p className="page-subtitle">Manage staff accounts and role assignments.</p>
+
+      {employeesState.error && <div className="card warn">Backend error: {employeesState.error}</div>}
+
+      <section className="grid-2">
+        <div className="card">
+          <h3>Create Staff User</h3>
+          <form className="form" onSubmit={handleCreate}>
+            <label>Username</label>
+            <input value={createForm.username} onChange={(e) => setCreateForm((p) => ({ ...p, username: e.target.value }))} required />
+            <label>Password</label>
+            <input type="password" value={createForm.password} onChange={(e) => setCreateForm((p) => ({ ...p, password: e.target.value }))} required />
+            <label>Full Name</label>
+            <input value={createForm.full_name} onChange={(e) => setCreateForm((p) => ({ ...p, full_name: e.target.value }))} required />
+            <label>Email</label>
+            <input type="email" value={createForm.email} onChange={(e) => setCreateForm((p) => ({ ...p, email: e.target.value }))} />
+            <label>Phone</label>
+            <input value={createForm.phone} onChange={(e) => setCreateForm((p) => ({ ...p, phone: e.target.value }))} />
+            <label>Role</label>
+            <select value={createForm.role} onChange={(e) => setCreateForm((p) => ({ ...p, role: e.target.value }))}>
+              <option value="admin">Admin</option>
+              <option value="manager">Manager</option>
+              <option value="tech">Technician</option>
+              <option value="other">Other</option>
+            </select>
+            {createState.error && <div className="form-error">{createState.error}</div>}
+            {createState.success && <div className="card form-success"><strong>{createState.success}</strong></div>}
+            <button className="primary-btn" type="submit" disabled={createState.loading}>
+              {createState.loading ? 'Creating...' : 'Create User'}
+            </button>
+          </form>
+        </div>
+
+        <div className="card">
+          <h3>Existing Staff</h3>
+          {updateState.error && <div className="form-error">{updateState.error}</div>}
+          {updateState.success && <p className="meta">{updateState.success}</p>}
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Username</th>
+                  <th>Role</th>
+                  <th>Active</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {employeesState.loading && <tr><td colSpan="5" className="meta">Loading staff...</td></tr>}
+                {!employeesState.loading && employees.length === 0 && <tr><td colSpan="5" className="meta">No staff users yet.</td></tr>}
+                {!employeesState.loading && employees.map((row) => (
+                  <tr key={row.id}>
+                    <td>{row.full_name}</td>
+                    <td>{row.username}</td>
+                    <td>
+                      <select value={roleDrafts[row.id] || row.role} onChange={(e) => setRoleDrafts((p) => ({ ...p, [row.id]: e.target.value }))}>
+                        <option value="admin">Admin</option>
+                        <option value="manager">Manager</option>
+                        <option value="tech">Technician</option>
+                        <option value="other">Other</option>
+                      </select>
+                    </td>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(activeDrafts[row.id])}
+                        onChange={(e) => setActiveDrafts((p) => ({ ...p, [row.id]: e.target.checked }))}
+                      />
+                    </td>
+                    <td>
+                      <button className="ghost-btn" onClick={() => handleSaveRole(row.id)} disabled={updateState.loadingId === row.id}>
+                        {updateState.loadingId === row.id ? 'Saving...' : 'Save'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
+
 function CustomersPage() {
-  const { loading, error, data } = useApi('/customers/', []);
+  const customerState = useApi('/manage/customers/', []);
+  const [customers, setCustomers] = useState([]);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState({ full_name: '', email: '', phone: '' });
+  const [saveState, setSaveState] = useState({ loading: false, error: '', success: '' });
+
+  useEffect(() => {
+    setCustomers(Array.isArray(customerState.data) ? customerState.data : []);
+  }, [customerState.data]);
+
+  function startCreate() {
+    setEditingId(null);
+    setForm({ full_name: '', email: '', phone: '' });
+    setSaveState({ loading: false, error: '', success: '' });
+  }
+
+  function startEdit(customer) {
+    setEditingId(customer.id);
+    setForm({ full_name: customer.full_name || '', email: customer.email || '', phone: customer.phone || '' });
+    setSaveState({ loading: false, error: '', success: '' });
+  }
+
+  async function handleSave(event) {
+    event.preventDefault();
+    setSaveState({ loading: true, error: '', success: '' });
+    try {
+      const isEdit = Boolean(editingId);
+      const res = await fetch(
+        isEdit ? `${API_BASE}/manage/customers/${editingId}/` : `${API_BASE}/manage/customers/`,
+        {
+          method: isEdit ? 'PATCH' : 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(form)
+        }
+      );
+      const json = await res.json();
+      if (!res.ok) throw new Error(JSON.stringify(json));
+      const payload = json.customer;
+      setCustomers((prev) => {
+        if (isEdit) return prev.map((c) => (c.id === payload.id ? { ...c, ...payload } : c));
+        return [...prev, payload].sort((a, b) => a.full_name.localeCompare(b.full_name));
+      });
+      setSaveState({ loading: false, error: '', success: isEdit ? 'Customer updated.' : 'Customer created.' });
+      if (!isEdit) startCreate();
+      window.dispatchEvent(new Event('hs:customers-updated'));
+    } catch (err) {
+      setSaveState({ loading: false, error: err.message || 'Failed to save customer.', success: '' });
+    }
+  }
+
+  async function handleDelete(customerId) {
+    const confirmDelete = window.confirm('Delete this customer?');
+    if (!confirmDelete) return;
+    setSaveState({ loading: true, error: '', success: '' });
+    try {
+      const res = await fetch(`${API_BASE}/manage/customers/${customerId}/`, {
+        method: 'DELETE',
+        credentials: 'include'
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Delete failed (${res.status})`);
+      }
+      setCustomers((prev) => prev.filter((c) => c.id !== customerId));
+      if (editingId === customerId) startCreate();
+      setSaveState({ loading: false, error: '', success: 'Customer deleted.' });
+      window.dispatchEvent(new Event('hs:customers-updated'));
+    } catch (err) {
+      setSaveState({ loading: false, error: err.message || 'Failed to delete customer.', success: '' });
+    }
+  }
 
   return (
     <>
       <h1 className="page-title">Customers</h1>
-      <p className="page-subtitle">Client records and associated memorials.</p>
+      <p className="page-subtitle">Create, edit, and manage customer records.</p>
 
-      {error && <div className="card warn">Backend error: {error}</div>}
+      {customerState.error && <div className="card warn">Backend error: {customerState.error}</div>}
 
-      <div className="card">
-        <table>
-          <thead>
-            <tr>
-              <th>Customer</th>
-              <th>Memorials</th>
-              <th>Email</th>
-              <th>Phone</th>
-              <th>Last Contact</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && <tr><td colSpan="5" className="meta">Loading...</td></tr>}
-            {!loading && data.length === 0 && <tr><td colSpan="5" className="meta">No customers yet.</td></tr>}
-            {!loading && data.map((c) => (
-              <tr key={c.id}>
-                <td>{c.full_name}</td>
-                <td>{c.memorials_count || 0}</td>
-                <td>{c.email || '—'}</td>
-                <td>{c.phone || '—'}</td>
-                <td>{c.last_contact || '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <section className="grid-2">
+        <div className="card">
+          <h3>{editingId ? `Edit Customer #${editingId}` : 'New Customer'}</h3>
+          <form className="form" onSubmit={handleSave}>
+            <label>Full Name</label>
+            <input value={form.full_name} onChange={(e) => setForm((p) => ({ ...p, full_name: e.target.value }))} required />
+            <label>Email</label>
+            <input type="email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} />
+            <label>Phone</label>
+            <input value={form.phone} onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))} />
+            {saveState.error && <div className="form-error">{saveState.error}</div>}
+            {saveState.success && <div className="card form-success"><strong>{saveState.success}</strong></div>}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button className="primary-btn" type="submit" disabled={saveState.loading}>
+                {saveState.loading ? 'Saving...' : (editingId ? 'Update Customer' : 'Create Customer')}
+              </button>
+              <button className="ghost-btn" type="button" onClick={startCreate}>Clear</button>
+            </div>
+          </form>
+        </div>
+
+        <div className="card">
+          <h3>Customer List</h3>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Customer</th>
+                  <th>Memorials</th>
+                  <th>Email</th>
+                  <th>Phone</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {customerState.loading && <tr><td colSpan="5" className="meta">Loading...</td></tr>}
+                {!customerState.loading && customers.length === 0 && <tr><td colSpan="5" className="meta">No customers yet.</td></tr>}
+                {!customerState.loading && customers.map((c) => (
+                  <tr key={c.id}>
+                    <td>{c.full_name}</td>
+                    <td>{c.memorials_count || 0}</td>
+                    <td>{c.email || '—'}</td>
+                    <td>{c.phone || '—'}</td>
+                    <td style={{ display: 'flex', gap: '6px' }}>
+                      <button className="ghost-btn" onClick={() => startEdit(c)}>Edit</button>
+                      <button className="ghost-btn" onClick={() => handleDelete(c.id)}>Delete</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
     </>
   );
 }
