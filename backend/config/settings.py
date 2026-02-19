@@ -129,9 +129,12 @@ USE_TZ = True
 STATIC_URL = '/static/'
 
 # Additional static dirs (app static already discovered via AppDirectoriesFinder)
-STATICFILES_DIRS = [
-    BASE_DIR / "core" / "static",
+FRONTEND_STATIC_CANDIDATES = [
     BASE_DIR.parent / "frontent",
+    BASE_DIR.parent / "frontend",
+]
+STATICFILES_DIRS = [BASE_DIR / "core" / "static"] + [
+    path for path in FRONTEND_STATIC_CANDIDATES if path.exists()
 ]
 STATIC_ROOT = BASE_DIR / "staticfiles"
 

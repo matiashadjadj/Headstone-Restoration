@@ -220,7 +220,7 @@ function parseRoute(path) {
 }
 
 function DashboardPage() {
-  const [enabled, setEnabled] = useState(false);
+  const [enabled] = useState(true);
   const { loading, error, summary, upcoming, recent } = useDashboardData(enabled);
 
   const stats = [
@@ -259,13 +259,6 @@ function DashboardPage() {
     <>
       <h1 className="page-title">Dashboard</h1>
       <p className="page-subtitle">Overview of restoration activity, revenue, and scheduling.</p>
-
-      {!enabled && (
-        <div className="card">
-          <p className="meta">Dashboard data is paused.</p>
-          <button className="primary-btn" onClick={() => setEnabled(true)}>Load dashboard data</button>
-        </div>
-      )}
 
       {enabled && error && <div className="card warn">Backend error: {error}</div>}
 

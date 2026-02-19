@@ -38,6 +38,17 @@ find_available_port() {
   return 1
 }
 
+resolve_frontend_dir() {
+  local candidate
+  for candidate in "$REPO_ROOT/frontent" "$REPO_ROOT/frontend"; do
+    if [[ -d "$candidate" && -f "$candidate/index.html" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Prefer a venv inside backend/, but fall back to repo-level venv.
 if [[ -f "$PROJECT_ROOT/venv/bin/activate" ]]; then
   VENV_PATH="$PROJECT_ROOT/venv"
@@ -69,8 +80,7 @@ fi
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 AUTO_FRONTEND_PORT="${AUTO_FRONTEND_PORT:-1}"
 if [[ "${START_FRONTEND:-1}" == "1" ]]; then
-  FRONTEND_DIR="${PROJECT_ROOT}/../frontent"
-  if [[ -d "$FRONTEND_DIR" ]]; then
+  if FRONTEND_DIR="$(resolve_frontend_dir)"; then
     FRONTEND_BIND_PORT="$FRONTEND_PORT"
     if [[ "$(is_port_in_use "$FRONTEND_BIND_PORT")" == "1" ]]; then
       if [[ "$AUTO_FRONTEND_PORT" == "1" ]]; then
@@ -100,7 +110,7 @@ if [[ "${START_FRONTEND:-1}" == "1" ]]; then
       fi
     fi
   else
-    echo "Frontend directory not found at $FRONTEND_DIR; skipping frontend server."
+    echo "Frontend directory with index.html not found at $REPO_ROOT/frontent or $REPO_ROOT/frontend; skipping frontend server."
   fi
 fi
 
