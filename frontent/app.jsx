@@ -491,12 +491,14 @@ function SchedulingPage() {
   const [technicianId, setTechnicianId] = useState('');
   const [scheduledStart, setScheduledStart] = useState('');
   const [estimatedMinutes, setEstimatedMinutes] = useState('90');
+  const [price, setPrice] = useState('');
   const [gpsLat, setGpsLat] = useState('');
   const [gpsLng, setGpsLng] = useState('');
   const [calendarDate, setCalendarDate] = useState(getStoredSchedulingDate);
   const [submitState, setSubmitState] = useState({ loading: false, error: '', success: '' });
   const [createMemorialId, setCreateMemorialId] = useState('');
   const [createServiceType, setCreateServiceType] = useState('cleaning');
+  const [createInitialPrice, setCreateInitialPrice] = useState('');
   const [createState, setCreateState] = useState({ loading: false, error: '', success: '' });
 
   useEffect(() => {
@@ -525,6 +527,7 @@ function SchedulingPage() {
     setTechnicianId(preferred.technician_id ? String(preferred.technician_id) : '');
     setScheduledStart(toDatetimeLocalInput(preferred.scheduled_start));
     setEstimatedMinutes(preferred.estimated_minutes ? String(preferred.estimated_minutes) : '90');
+    setPrice(preferred.price != null ? String(preferred.price) : '');
     setGpsLat(preferred.gps_lat != null ? String(preferred.gps_lat) : '');
     setGpsLng(preferred.gps_lng != null ? String(preferred.gps_lng) : '');
   }, [services, selectedServiceId, selectedService]);
@@ -549,6 +552,7 @@ function SchedulingPage() {
     setTechnicianId(svc.technician_id ? String(svc.technician_id) : '');
     setScheduledStart(toDatetimeLocalInput(svc.scheduled_start));
     setEstimatedMinutes(svc.estimated_minutes ? String(svc.estimated_minutes) : '90');
+    setPrice(svc.price != null ? String(svc.price) : '');
     setGpsLat(svc.gps_lat != null ? String(svc.gps_lat) : '');
     setGpsLng(svc.gps_lng != null ? String(svc.gps_lng) : '');
     setSubmitState({ loading: false, error: '', success: '' });
@@ -583,6 +587,15 @@ function SchedulingPage() {
       scheduled_start: datetimeLocalToIso(scheduledStart),
       estimated_minutes: Number(estimatedMinutes) || 90
     };
+    const priceValue = price.trim();
+    if (priceValue) {
+      const parsedPrice = Number(priceValue);
+      if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+        setSubmitState({ loading: false, error: 'Enter a valid non-negative price.', success: '' });
+        return;
+      }
+      payload.price = Number(parsedPrice.toFixed(2));
+    }
     if (gpsLatValue && gpsLngValue) {
       const parsedLat = parseCoordinate(gpsLatValue, 'lat');
       const parsedLng = parseCoordinate(gpsLngValue, 'lng');
@@ -629,6 +642,16 @@ function SchedulingPage() {
       setCreateState({ loading: false, error: 'Select a memorial.', success: '' });
       return;
     }
+    const createPriceValue = createInitialPrice.trim();
+    let initialPrice = null;
+    if (createPriceValue) {
+      const parsed = Number(createPriceValue);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        setCreateState({ loading: false, error: 'Enter a valid non-negative initial price.', success: '' });
+        return;
+      }
+      initialPrice = Number(parsed.toFixed(2));
+    }
 
     try {
       const res = await fetch(`${API_BASE}/scheduling/services/create/`, {
@@ -637,7 +660,8 @@ function SchedulingPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           memorial_id: Number(createMemorialId),
-          service_type: createServiceType
+          service_type: createServiceType,
+          initial_price: initialPrice
         })
       });
       if (!res.ok) {
@@ -649,6 +673,7 @@ function SchedulingPage() {
         setServices((prev) => [json.service, ...prev]);
         syncFormFromService(json.service.id);
       }
+      setCreateInitialPrice('');
       setCreateState({ loading: false, error: '', success: 'Job created. Now assign it below.' });
     } catch (err) {
       setCreateState({ loading: false, error: err.message || 'Failed to create job.', success: '' });
@@ -719,6 +744,7 @@ function SchedulingPage() {
                   <span>{svc.cemetery_name || 'No cemetery'}</span>
                   <div className="meta">
                     {formatDateTimeShort(svc.scheduled_start)} · {svc.technician_name || 'Unassigned'} · {svc.estimated_minutes || 0} min
+                    {svc.price != null ? ` · ${formatCurrency(Number(svc.price))}` : ''}
                   </div>
                 </li>
               ))}
@@ -752,6 +778,16 @@ function SchedulingPage() {
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
+
+            <label>Initial Price (USD)</label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={createInitialPrice}
+              onChange={(event) => setCreateInitialPrice(event.target.value)}
+              placeholder="Optional"
+            />
 
             {createState.error && <div className="form-error">{createState.error}</div>}
             {createState.success && <div className="card form-success"><strong>{createState.success}</strong></div>}
@@ -808,6 +844,16 @@ function SchedulingPage() {
               required
             />
 
+            <label>Price (USD)</label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={price}
+              onChange={(event) => setPrice(event.target.value)}
+              placeholder="e.g. 180.00"
+            />
+
             <label>GPS Latitude</label>
             <input
               type="text"
@@ -845,15 +891,16 @@ function SchedulingPage() {
                 <th>Status</th>
                 <th>When</th>
                 <th>Technician</th>
+                <th>Price</th>
                 <th>GPS</th>
               </tr>
             </thead>
             <tbody>
               {servicesState.loading && (
-                <tr><td colSpan="7" className="meta">Loading jobs...</td></tr>
+                <tr><td colSpan="8" className="meta">Loading jobs...</td></tr>
               )}
               {!servicesState.loading && services.length === 0 && (
-                <tr><td colSpan="7" className="meta">No jobs found. Create services in Django admin first.</td></tr>
+                <tr><td colSpan="8" className="meta">No jobs found. Create services in Django admin first.</td></tr>
               )}
               {!servicesState.loading && services.map((svc) => (
                 <tr
@@ -867,6 +914,7 @@ function SchedulingPage() {
                   <td><span className="tag">{svc.status || '—'}</span></td>
                   <td>{formatDateTimeShort(svc.scheduled_start)}</td>
                   <td>{svc.technician_name || 'Unassigned'}</td>
+                  <td>{svc.price != null ? formatCurrency(Number(svc.price)) : '—'}</td>
                   <td>
                     {svc.gps_lat != null && svc.gps_lng != null
                       ? `${svc.gps_lat}, ${svc.gps_lng}`

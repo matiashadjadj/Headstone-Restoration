@@ -70,6 +70,29 @@ fi
 # Use the default settings module unless the caller overrides it.
 export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-backend.config.settings}"
 
+# Print active DB target to avoid confusion when switching environments.
+REPO_ROOT="$REPO_ROOT" python - <<'PY'
+import os
+import sys
+from pathlib import Path
+
+repo_root = Path(os.environ["REPO_ROOT"]).resolve()
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", os.environ.get("DJANGO_SETTINGS_MODULE", "backend.config.settings"))
+
+from django.conf import settings  # noqa: E402
+
+db = settings.DATABASES["default"]
+engine = db.get("ENGINE", "")
+if engine.endswith("sqlite3"):
+    print(f"Using database: sqlite ({db.get('NAME')})")
+else:
+    host = db.get("HOST", "")
+    name = db.get("NAME", "")
+    print(f"Using database: postgres ({host}/{name})")
+PY
+
 # Run migrations unless explicitly skipped.
 if [[ "${SKIP_MIGRATE:-0}" != "1" ]]; then
   python "$PROJECT_ROOT/manage.py" migrate

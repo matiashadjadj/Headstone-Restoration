@@ -108,12 +108,38 @@ def env_trimmed(key: str, default: str = "") -> str:
     return value.strip() if isinstance(value, str) else value
 
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+db_host = env_trimmed("DB_HOST")
+db_name = env_trimmed("DB_NAME")
+db_user = env_trimmed("DB_USER")
+db_password = env_trimmed("DB_PASSWORD")
+db_port = env_trimmed("DB_PORT", "5432")
+db_engine = env_trimmed("DB_ENGINE", "sqlite").lower()
+
+if db_engine == "postgres" and db_host and db_name and db_user:
+    # Opt-in managed Postgres (e.g., Supabase) when enabled explicitly.
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": db_name,
+            "USER": db_user,
+            "PASSWORD": db_password,
+            "HOST": db_host,
+            "PORT": db_port,
+            "OPTIONS": {
+                "sslmode": env_trimmed("DB_SSLMODE", "require"),
+            },
+        }
     }
-}
+else:
+    sqlite_name = env_trimmed("SQLITE_PATH", str(BASE_DIR / "db.sqlite3"))
+    sqlite_path = Path(sqlite_name).expanduser()
+    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": sqlite_path,
+        }
+    }
 
 
 # Password validation

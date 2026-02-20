@@ -19,6 +19,7 @@ class AssignTechnicianSerializer(serializers.Serializer):
     technician_id = serializers.IntegerField()
     scheduled_start = serializers.DateTimeField()
     estimated_minutes = serializers.IntegerField(min_value=1)
+    price = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=0, required=False, allow_null=True)
     gps_lat = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
     gps_lng = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
     
@@ -118,6 +119,7 @@ class SchedulingServiceSerializer(serializers.ModelSerializer):
     cemetery_name = serializers.CharField(source="memorial.plot.cemetery.name", read_only=True)
     technician_id = serializers.SerializerMethodField()
     technician_name = serializers.SerializerMethodField()
+    price = serializers.SerializerMethodField()
     gps_lat = serializers.DecimalField(source="memorial.plot.gps_lat", max_digits=9, decimal_places=6, read_only=True)
     gps_lng = serializers.DecimalField(source="memorial.plot.gps_lng", max_digits=9, decimal_places=6, read_only=True)
 
@@ -133,6 +135,7 @@ class SchedulingServiceSerializer(serializers.ModelSerializer):
             "cemetery_name",
             "technician_id",
             "technician_name",
+            "price",
             "gps_lat",
             "gps_lng",
         ]
@@ -145,10 +148,17 @@ class SchedulingServiceSerializer(serializers.ModelSerializer):
         assignment = obj.assignments.select_related("employee").first()
         return assignment.employee.full_name if assignment else None
 
+    def get_price(self, obj):
+        raw = getattr(obj, "price", None)
+        if raw is None:
+            return None
+        return float(raw)
+
 
 class CreateSchedulingServiceSerializer(serializers.Serializer):
     memorial_id = serializers.IntegerField()
     service_type = serializers.ChoiceField(choices=Service.ServiceType.choices, required=False)
+    initial_price = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=0, required=False, allow_null=True)
 
 
 class SendCustomerEmailSerializer(serializers.Serializer):

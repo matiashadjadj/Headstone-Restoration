@@ -31,6 +31,49 @@ from core.api.serializers import (
     EmployeeCreateSerializer,
 )
 
+
+def scheduling_services_queryset():
+    return (
+        Service.objects.select_related("memorial__customer", "memorial__plot__cemetery")
+        .prefetch_related("assignments__employee")
+        .annotate(
+            price=models.Subquery(
+                Invoice.objects.filter(service=models.OuterRef("pk"))
+                .order_by("-issued_date", "-created_at")
+                .values("total_amount")[:1]
+            )
+        )
+    )
+
+
+def set_service_price(service, amount):
+    if amount is None:
+        return
+
+    invoice = (
+        Invoice.objects.filter(service=service)
+        .order_by("-issued_date", "-created_at")
+        .first()
+    )
+    if invoice:
+        invoice.total_amount = amount
+        if not invoice.issued_date:
+            invoice.issued_date = timezone.localdate()
+        if not invoice.customer_id:
+            invoice.customer = service.memorial.customer
+        invoice.save(update_fields=["total_amount", "issued_date", "customer", "updated_at"])
+        return
+
+    Invoice.objects.create(
+        customer=service.memorial.customer,
+        service=service,
+        status=Invoice.Status.DRAFT,
+        currency="usd",
+        issued_date=timezone.localdate(),
+        total_amount=amount,
+    )
+
+
 @method_decorator(csrf_exempt, name="dispatch")
 class AssignTechnicianView(APIView):
     # Keep open in this demo app; tighten permissions for production.
@@ -46,6 +89,7 @@ class AssignTechnicianView(APIView):
         tech_id = serializer.validated_data["technician_id"]
         scheduled_start = serializer.validated_data["scheduled_start"]
         estimated_minutes = serializer.validated_data["estimated_minutes"]
+        price = serializer.validated_data.get("price")
         gps_lat = serializer.validated_data.get("gps_lat")
         gps_lng = serializer.validated_data.get("gps_lng")
 
@@ -62,6 +106,7 @@ class AssignTechnicianView(APIView):
         s.scheduled_date = scheduled_start.date()
         s.status = Service.Status.SCHEDULED
         s.save()
+        set_service_price(s, price)
 
         if gps_lat is not None and gps_lng is not None:
             plot = s.memorial.plot
@@ -70,8 +115,7 @@ class AssignTechnicianView(APIView):
             plot.save(update_fields=["gps_lat", "gps_lng", "updated_at"])
 
         payload = SchedulingServiceSerializer(
-            Service.objects.select_related("memorial__customer", "memorial__plot__cemetery")
-            .prefetch_related("assignments__employee")
+            scheduling_services_queryset()
             .get(id=s.id)
         ).data
         return Response({"ok": True, "service": payload}, status=status.HTTP_200_OK)
@@ -93,8 +137,7 @@ class SchedulingServiceListView(APIView):
 
     def get(self, request):
         services = (
-            Service.objects.select_related("memorial__customer", "memorial__plot__cemetery")
-            .prefetch_related("assignments__employee")
+            scheduling_services_queryset()
             .filter(status__in=[Service.Status.DRAFT, Service.Status.SCHEDULED, Service.Status.IN_PROGRESS])
             .order_by(
                 models.F("scheduled_start").asc(nulls_last=True),
@@ -114,15 +157,16 @@ class SchedulingServiceCreateView(APIView):
 
         memorial = get_object_or_404(Memorial, id=serializer.validated_data["memorial_id"])
         service_type = serializer.validated_data.get("service_type", Service.ServiceType.OTHER)
+        initial_price = serializer.validated_data.get("initial_price")
 
         service = Service.objects.create(
             memorial=memorial,
             service_type=service_type,
             status=Service.Status.DRAFT,
         )
+        set_service_price(service, initial_price)
         payload = SchedulingServiceSerializer(
-            Service.objects.select_related("memorial__customer", "memorial__plot__cemetery")
-            .prefetch_related("assignments__employee")
+            scheduling_services_queryset()
             .get(id=service.id)
         ).data
         return Response({"ok": True, "service": payload}, status=status.HTTP_201_CREATED)
