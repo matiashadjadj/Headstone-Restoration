@@ -1,6 +1,16 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
-from core.models import Service, ServiceAssignment, Photo, Employee, Memorial, Customer, Cemetery
+from core.models import (
+    Service,
+    ServiceAssignment,
+    Photo,
+    Employee,
+    Memorial,
+    Customer,
+    Cemetery,
+    Invoice,
+    InvoiceItem,
+)
 
 
 class ServiceSerializer(serializers.ModelSerializer):
@@ -216,3 +226,45 @@ class EmployeeCreateSerializer(serializers.Serializer):
         if User.objects.filter(username=value).exists():
             raise serializers.ValidationError("Username already exists.")
         return value
+
+
+class InvoiceItemSerializer(serializers.ModelSerializer):
+    line_total = serializers.SerializerMethodField()
+
+    class Meta:
+        model = InvoiceItem
+        fields = ["id", "description", "quantity", "unit_price", "line_total"]
+
+    def get_line_total(self, obj):
+        return float(obj.line_total())
+
+
+class CustomerInvoiceSerializer(serializers.ModelSerializer):
+    items = InvoiceItemSerializer(many=True, read_only=True)
+    customer_name = serializers.CharField(source="customer.full_name", read_only=True)
+    service_type = serializers.CharField(source="service.service_type", read_only=True)
+
+    class Meta:
+        model = Invoice
+        fields = [
+            "id",
+            "customer_name",
+            "status",
+            "issued_date",
+            "due_date",
+            "currency",
+            "total_amount",
+            "paid_at",
+            "notes",
+            "service_type",
+            "items",
+        ]
+
+
+class CreateCheckoutSessionSerializer(serializers.Serializer):
+    invoice_id = serializers.IntegerField(min_value=1)
+    customer_email = serializers.EmailField()
+
+
+class VerifyCheckoutSessionSerializer(serializers.Serializer):
+    session_id = serializers.CharField(max_length=255)

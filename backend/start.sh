@@ -40,7 +40,7 @@ find_available_port() {
 
 resolve_frontend_dir() {
   local candidate
-  for candidate in "$REPO_ROOT/frontent" "$REPO_ROOT/frontend"; do
+  for candidate in "$REPO_ROOT/frontend" "$REPO_ROOT/frontent"; do
     if [[ -d "$candidate" && -f "$candidate/index.html" ]]; then
       echo "$candidate"
       return 0

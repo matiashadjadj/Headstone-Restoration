@@ -13,7 +13,8 @@ from django.conf import settings
 from django.core.mail import send_mail
 from django.contrib.auth.models import User
 
-from core.models import Service, Employee, ServiceAssignment, Invoice, Memorial, Customer, Cemetery
+from core.models import Service, Employee, ServiceAssignment, Invoice, Memorial, Customer, Cemetery, Payment
+from payments import stripe_client
 from core.api.serializers import (
     AssignTechnicianSerializer,
     DashboardServiceSerializer,
@@ -29,6 +30,9 @@ from core.api.serializers import (
     EmployeeRoleSerializer,
     EmployeeRoleUpdateSerializer,
     EmployeeCreateSerializer,
+    CustomerInvoiceSerializer,
+    CreateCheckoutSessionSerializer,
+    VerifyCheckoutSessionSerializer,
 )
 
 
@@ -316,6 +320,198 @@ class CustomerManageDetailView(APIView):
         customer = get_object_or_404(Customer, id=customer_id)
         customer.delete()
         return Response({"ok": True}, status=status.HTTP_200_OK)
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class CustomerInvoiceListView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def get(self, request):
+        email = (request.query_params.get("email") or "").strip().lower()
+        if not email:
+            return Response({"detail": "email is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        customer = get_object_or_404(Customer, email__iexact=email)
+        invoices = (
+            Invoice.objects.filter(customer=customer)
+            .prefetch_related("items")
+            .order_by(
+                models.Case(
+                    models.When(status=Invoice.Status.PAID, then=1),
+                    default=0,
+                    output_field=models.IntegerField(),
+                ),
+                "-issued_date",
+                "-created_at",
+            )
+        )
+        return Response(CustomerInvoiceSerializer(invoices, many=True).data)
+
+
+def _build_checkout_urls(request):
+    origin = request.headers.get("Origin", "").rstrip("/")
+    if origin:
+        base = origin
+    else:
+        base = request.build_absolute_uri("/static/index.html").split("/static/index.html", 1)[0]
+
+    success_url = f"{base}/static/index.html?checkout=success&session_id={{CHECKOUT_SESSION_ID}}#/customer/settings"
+    cancel_url = f"{base}/static/index.html?checkout=canceled#/customer/settings"
+
+    if origin:
+        success_url = f"{origin}/?checkout=success&session_id={{CHECKOUT_SESSION_ID}}#/customer/settings"
+        cancel_url = f"{origin}/?checkout=canceled#/customer/settings"
+
+    return success_url, cancel_url
+
+
+def _sync_checkout_session(session, invoice: Invoice):
+    payment_intent = session.get("payment_intent")
+    payment_intent_id = payment_intent["id"] if isinstance(payment_intent, dict) else (payment_intent or "")
+    latest_charge = payment_intent.get("latest_charge") if isinstance(payment_intent, dict) else None
+    charge_id = latest_charge.get("id", "") if isinstance(latest_charge, dict) else ""
+    receipt_url = latest_charge.get("receipt_url", "") if isinstance(latest_charge, dict) else ""
+    session_id = session.get("id", "")
+    payment_status = session.get("payment_status", "")
+
+    payment, _ = Payment.objects.get_or_create(
+        invoice=invoice,
+        stripe_checkout_session_id=session_id,
+        defaults={
+            "provider": Payment.Provider.STRIPE,
+            "method": Payment.Method.CARD,
+            "status": Payment.Status.PENDING,
+            "currency": invoice.currency,
+            "amount": invoice.total_amount,
+        },
+    )
+
+    payment.stripe_payment_intent_id = payment_intent_id
+    payment.stripe_charge_id = charge_id
+    payment.receipt_url = receipt_url
+    payment.amount = invoice.total_amount
+    payment.currency = invoice.currency
+    invoice.stripe_checkout_session_id = session_id
+    invoice.stripe_payment_intent_id = payment_intent_id
+
+    if payment_status == "paid":
+        now = timezone.now()
+        payment.status = Payment.Status.SUCCEEDED
+        payment.succeeded_at = payment.succeeded_at or now
+        invoice.status = Invoice.Status.PAID
+        invoice.paid_at = invoice.paid_at or now
+    elif session.get("status") == "expired":
+        payment.status = Payment.Status.CANCELED
+    else:
+        payment.status = Payment.Status.PENDING
+
+    payment.save(
+        update_fields=[
+            "stripe_payment_intent_id",
+            "stripe_charge_id",
+            "receipt_url",
+            "amount",
+            "currency",
+            "status",
+            "succeeded_at",
+            "updated_at",
+        ]
+    )
+    invoice.save(
+        update_fields=[
+            "stripe_checkout_session_id",
+            "stripe_payment_intent_id",
+            "status",
+            "paid_at",
+            "updated_at",
+        ]
+    )
+    return payment
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class CreateCheckoutSessionView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def post(self, request):
+        serializer = CreateCheckoutSessionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        invoice = get_object_or_404(
+            Invoice.objects.select_related("customer", "service").prefetch_related("items"),
+            id=serializer.validated_data["invoice_id"],
+            customer__email__iexact=serializer.validated_data["customer_email"],
+        )
+
+        if invoice.status == Invoice.Status.PAID:
+            return Response({"detail": "This invoice has already been paid."}, status=status.HTTP_400_BAD_REQUEST)
+
+        success_url, cancel_url = _build_checkout_urls(request)
+
+        try:
+            session = stripe_client.create_checkout_session(
+                invoice=invoice,
+                customer_email=serializer.validated_data["customer_email"],
+                success_url=success_url,
+                cancel_url=cancel_url,
+            )
+        except stripe_client.StripeAPIError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        invoice.stripe_checkout_session_id = session.get("id", "")
+        invoice.save(update_fields=["stripe_checkout_session_id", "updated_at"])
+        Payment.objects.update_or_create(
+            invoice=invoice,
+            stripe_checkout_session_id=session.get("id", ""),
+            defaults={
+                "provider": Payment.Provider.STRIPE,
+                "method": Payment.Method.CARD,
+                "status": Payment.Status.PENDING,
+                "currency": invoice.currency,
+                "amount": invoice.total_amount,
+            },
+        )
+
+        return Response(
+            {
+                "ok": True,
+                "checkout_url": session.get("url"),
+                "session_id": session.get("id"),
+                "publishable_key_configured": bool(getattr(settings, "STRIPE_PUBLISHABLE_KEY", "")),
+            }
+        )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class VerifyCheckoutSessionView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def get(self, request):
+        serializer = VerifyCheckoutSessionSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        session_id = serializer.validated_data["session_id"]
+
+        invoice = get_object_or_404(Invoice, stripe_checkout_session_id=session_id)
+
+        try:
+            session = stripe_client.retrieve_checkout_session(session_id)
+        except stripe_client.StripeAPIError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        payment = _sync_checkout_session(session, invoice)
+        return Response(
+            {
+                "ok": True,
+                "invoice": CustomerInvoiceSerializer(invoice).data,
+                "payment": {
+                    "status": payment.status,
+                    "receipt_url": payment.receipt_url,
+                },
+            }
+        )
 
 
 @method_decorator(csrf_exempt, name="dispatch")

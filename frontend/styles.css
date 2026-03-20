@@ -579,6 +579,8 @@ textarea {
   margin-bottom: 16px;
   background: #ecfdf5;
   border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  padding: 12px 14px;
 }
 
 .form-success strong {
@@ -595,6 +597,89 @@ input, select {
   padding: 10px;
   border-radius: 8px;
   border: 1px solid #e5e7eb;
+}
+
+.billing-card {
+  margin-bottom: 20px;
+}
+
+.billing-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.billing-total {
+  text-align: right;
+}
+
+.billing-total span {
+  display: block;
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+.billing-total strong {
+  font-size: 24px;
+  color: #0f172a;
+}
+
+.invoice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.invoice-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.invoice-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.invoice-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.invoice-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 88px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.invoice-status-paid {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.invoice-status-sent,
+.invoice-status-draft {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.primary-btn:disabled {
+  opacity: 0.7;
+  cursor: wait;
 }
 
 .role-select {
@@ -711,6 +796,16 @@ body.theme-dark .toggle-btn.active {
 body.theme-dark .ghost-btn {
   border-color: #2b4061;
   color: #dbeafe;
+}
+
+body.theme-dark .billing-total strong,
+body.theme-dark .invoice-title {
+  color: #e2e8f0;
+}
+
+body.theme-dark .invoice-row {
+  background: #0f172a;
+  border-color: #1e293b;
 }
 
 body.theme-dark .chart-placeholder,
@@ -923,6 +1018,15 @@ body.theme-dark .revenue-rate {
   .logo {
     gap: 8px;
   }
+
+  .billing-summary,
+  .invoice-row {
+    flex-direction: column;
+  }
+
+  .invoice-actions {
+    align-items: flex-start;
+  }
 }
 
 @media (max-width: 680px) {
@@ -997,4 +1101,3 @@ body.theme-dark .revenue-rate {
     right: 8px;
   }
 }
-

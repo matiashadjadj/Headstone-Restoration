@@ -14,6 +14,9 @@ from .views import (
     EmployeeRoleListView,
     EmployeeRoleDetailView,
     EmployeeCreateView,
+    CustomerInvoiceListView,
+    CreateCheckoutSessionView,
+    VerifyCheckoutSessionView,
 )
 
 urlpatterns = [
@@ -30,5 +33,8 @@ urlpatterns = [
     path("manage/employees/", EmployeeRoleListView.as_view(), name="manage-employees"),
     path("manage/employees/create/", EmployeeCreateView.as_view(), name="manage-employees-create"),
     path("manage/employees/<int:employee_id>/", EmployeeRoleDetailView.as_view(), name="manage-employee-detail"),
+    path("customer/invoices/", CustomerInvoiceListView.as_view(), name="customer-invoices"),
+    path("payments/checkout-session/", CreateCheckoutSessionView.as_view(), name="payments-checkout-session"),
+    path("payments/checkout-session/verify/", VerifyCheckoutSessionView.as_view(), name="payments-checkout-session-verify"),
     path("manager/services/<int:service_id>/assign/", AssignTechnicianView.as_view()),
 ]

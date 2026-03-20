@@ -167,8 +167,8 @@ STATIC_URL = '/static/'
 
 # Additional static dirs (app static already discovered via AppDirectoriesFinder)
 FRONTEND_STATIC_CANDIDATES = [
-    BASE_DIR.parent / "frontent",
     BASE_DIR.parent / "frontend",
+    BASE_DIR.parent / "frontent",
 ]
 STATICFILES_DIRS = [BASE_DIR / "core" / "static"] + [
     path for path in FRONTEND_STATIC_CANDIDATES if path.exists()
