@@ -1,3 +1,9 @@
+import secrets
+from decimal import Decimal
+from datetime import timedelta
+
+from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 from django.contrib.auth.models import User
@@ -53,8 +59,20 @@ class Plot(TimestampedModel):
     plot_number = models.CharField(max_length=50, blank=True)
 
     # optional precise location
-    gps_lat = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    gps_lng = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    gps_lat = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("-90")), MaxValueValidator(Decimal("90"))],
+    )
+    gps_lng = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("-180")), MaxValueValidator(Decimal("180"))],
+    )
 
     access_notes = models.TextField(blank=True)
 
@@ -101,6 +119,7 @@ class Memorial(TimestampedModel):
 class Employee(TimestampedModel):
     class Role(models.TextChoices):
         ADMIN = "admin", "Admin"
+        FRONT_DESK = "front_desk", "Front Desk"
         MANAGER = "manager", "Manager"
         TECH = "tech", "Technician"
         OTHER = "other", "Other"
@@ -116,9 +135,59 @@ class Employee(TimestampedModel):
         return self.full_name
 
 
+class EmployeeInvite(TimestampedModel):
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="invites")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="employee_invites")
+    invited_email = models.EmailField()
+    token = models.CharField(max_length=128, unique=True, db_index=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="sent_employee_invites")
+
+    def save(self, *args, **kwargs):
+        if not self.token:
+            self.token = secrets.token_urlsafe(32)
+        if not self.expires_at:
+            self.expires_at = timezone.now() + timedelta(hours=getattr(settings, "INVITE_EXPIRY_HOURS", 72))
+        super().save(*args, **kwargs)
+
+    @property
+    def is_active(self) -> bool:
+        return self.used_at is None and self.revoked_at is None and self.expires_at > timezone.now()
+
+
+class UserProfile(TimestampedModel):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
+    date_of_birth = models.DateField(null=True, blank=True)
+    address_line1 = models.CharField(max_length=255, blank=True)
+    address_line2 = models.CharField(max_length=255, blank=True)
+    city = models.CharField(max_length=100, blank=True)
+    state = models.CharField(max_length=50, blank=True)
+    postal_code = models.CharField(max_length=20, blank=True)
+    bio = models.TextField(blank=True)
+    profile_photo = models.FileField(upload_to="profile_photos/", blank=True)
+
+    def __str__(self) -> str:
+        return f"Profile for {self.user.username}"
+
+
 # -----------------------
 # Services / work tracking
 # -----------------------
+
+class ServiceOption(TimestampedModel):
+    name = models.CharField(max_length=100, unique=True)
+    legacy_key = models.CharField(max_length=30, blank=True, null=True, unique=True)
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["sort_order", "name"]
+
+    def __str__(self) -> str:
+        return self.name
+
 
 class Service(TimestampedModel):
     class ServiceType(models.TextChoices):
@@ -137,6 +206,13 @@ class Service(TimestampedModel):
         CANCELED = "canceled", "Canceled"
 
     memorial = models.ForeignKey(Memorial, on_delete=models.CASCADE, related_name="services")
+    service_option = models.ForeignKey(
+        ServiceOption,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="services",
+    )
 
     service_type = models.CharField(max_length=30, choices=ServiceType.choices, default=ServiceType.OTHER)
     status = models.CharField(max_length=30, choices=Status.choices, default=Status.DRAFT)
@@ -157,8 +233,14 @@ class Service(TimestampedModel):
 
     internal_notes = models.TextField(blank=True)
 
+    @property
+    def service_type_label(self) -> str:
+        if self.service_option_id:
+            return self.service_option.name
+        return self.get_service_type_display()
+
     def __str__(self) -> str:
-        return f"Service #{self.id} - {self.get_service_type_display()} ({self.get_status_display()})"
+        return f"Service #{self.id} - {self.service_type_label} ({self.get_status_display()})"
 
 
 class ServiceStatusHistory(models.Model):

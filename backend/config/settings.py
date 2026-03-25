@@ -31,6 +31,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'corsheaders',
+    'communications',
     'core',
     'payments',
     'rest_framework'
@@ -174,6 +175,8 @@ STATICFILES_DIRS = [BASE_DIR / "core" / "static"] + [
     path for path in FRONTEND_STATIC_CANDIDATES if path.exists()
 ]
 STATIC_ROOT = BASE_DIR / "staticfiles"
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -184,10 +187,20 @@ STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY")
 
 # Email (defaults are development-friendly and can be overridden by env vars)
+# EMAIL_PROVIDER selects the reusable service/provider path. The first
+# implementation uses Django's configured email backend, which defaults to the
+# console backend locally and can be switched to SMTP or another backend in production.
+EMAIL_PROVIDER = env_trimmed("EMAIL_PROVIDER", "django").lower()
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "headstone@restoration.com")
+PANEL_FROM_EMAIL = env_trimmed("PANEL_FROM_EMAIL", DEFAULT_FROM_EMAIL)
+INVITE_FROM_EMAIL = env_trimmed("INVITE_FROM_EMAIL", DEFAULT_FROM_EMAIL)
+EMAIL_DEFAULT_REPLY_TO = env_trimmed("EMAIL_DEFAULT_REPLY_TO", "")
+EMAIL_FRONTEND_BASE_URL = env_trimmed("EMAIL_FRONTEND_BASE_URL", "")
+INVITE_EXPIRY_HOURS = int(env_trimmed("INVITE_EXPIRY_HOURS", "72") or "72")
 EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
 EMAIL_HOST = os.getenv("EMAIL_HOST", "")
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = env_trimmed("EMAIL_USE_TLS", "1") in {"1", "true", "True", "yes", "YES"}
+EMAIL_TIMEOUT = int(env_trimmed("EMAIL_TIMEOUT_SECONDS", "10") or "10")

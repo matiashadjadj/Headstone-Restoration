@@ -1,19 +1,27 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework import serializers
 from rest_framework.permissions import AllowAny
 from rest_framework.authentication import BasicAuthentication
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from django.utils import timezone
 from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.shortcuts import get_object_or_404
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import ensure_csrf_cookie
 from django.conf import settings
-from django.core.mail import send_mail
+from django.http import Http404
+from django.contrib.auth import login, logout
 from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 
-from core.models import Service, Employee, ServiceAssignment, Invoice, Memorial, Customer, Cemetery, Payment
+from communications.exceptions import EmailDeliveryError
+from communications.services import resolve_from_email, send_email
+from core.models import Service, ServiceOption, Employee, EmployeeInvite, UserProfile, ServiceAssignment, Invoice, Memorial, Customer, Cemetery, Payment
 from payments import stripe_client
 from core.api.serializers import (
     AssignTechnicianSerializer,
@@ -25,15 +33,211 @@ from core.api.serializers import (
     TechnicianSerializer,
     SchedulingServiceSerializer,
     CreateSchedulingServiceSerializer,
+    ServiceOptionSerializer,
+    ServiceOptionUpsertSerializer,
     SendCustomerEmailSerializer,
     CustomerUpsertSerializer,
     EmployeeRoleSerializer,
     EmployeeRoleUpdateSerializer,
     EmployeeCreateSerializer,
+    EmployeeInviteSerializer,
+    LoginSerializer,
+    PasswordSetupSerializer,
+    PasswordSetupValidateSerializer,
+    SessionUserSerializer,
+    UserProfileDetailSerializer,
+    UserProfileSerializer,
     CustomerInvoiceSerializer,
     CreateCheckoutSessionSerializer,
     VerifyCheckoutSessionSerializer,
 )
+
+INVALID_INVITE_MESSAGE = "Invite is invalid or expired."
+
+
+def resolve_session_user(user, request=None):
+    if not user or not user.is_authenticated:
+        return None
+
+    employee = getattr(user, "employee", None)
+    profile = getattr(user, "profile", None)
+    profile_photo_url = ""
+    if profile and profile.profile_photo:
+        try:
+            profile_photo_url = request.build_absolute_uri(profile.profile_photo.url) if request else profile.profile_photo.url
+        except Exception:
+            profile_photo_url = profile.profile_photo.url
+    phone = employee.phone if employee else ""
+    if employee:
+        if employee.role == Employee.Role.ADMIN:
+            frontend_role = "admin"
+        elif employee.role == Employee.Role.FRONT_DESK:
+            frontend_role = "frontdesk"
+        else:
+            frontend_role = "employee"
+        full_name = employee.full_name or user.get_full_name() or user.username
+        payload = {
+            "id": user.id,
+            "username": user.username,
+            "full_name": full_name,
+            "email": employee.email or user.email or "",
+            "phone": phone or "",
+            "profile_photo_url": profile_photo_url,
+            "frontend_role": frontend_role,
+            "source_role": employee.role,
+        }
+        return SessionUserSerializer(payload).data
+
+    if user.is_superuser:
+        payload = {
+            "id": user.id,
+            "username": user.username,
+            "full_name": user.get_full_name() or user.username,
+            "email": user.email or "",
+            "phone": phone or "",
+            "profile_photo_url": profile_photo_url,
+            "frontend_role": "admin",
+            "source_role": "admin",
+        }
+        return SessionUserSerializer(payload).data
+
+    customer = None
+    if user.email:
+        customer = Customer.objects.filter(email__iexact=user.email).first()
+    if customer:
+        payload = {
+            "id": user.id,
+            "username": user.username,
+            "full_name": customer.full_name or user.get_full_name() or user.username,
+            "email": customer.email or user.email or "",
+            "phone": customer.phone or "",
+            "profile_photo_url": profile_photo_url,
+            "frontend_role": "customer",
+            "source_role": "customer",
+        }
+        return SessionUserSerializer(payload).data
+
+    return None
+
+
+def get_employee_invite_or_404(token: str) -> EmployeeInvite:
+    invite = get_object_or_404(
+        EmployeeInvite.objects.select_related("employee", "user"),
+        token=token,
+    )
+    if not invite.is_active:
+        raise Http404
+    return invite
+
+
+def build_frontend_invite_url(request, token: str) -> str:
+    configured_base = (getattr(settings, "EMAIL_FRONTEND_BASE_URL", "") or "").rstrip("/")
+    if configured_base:
+        return f"{configured_base}/index.html?invite={token}#/setup-password"
+    origin = (request.headers.get("Origin") or "").rstrip("/")
+    if origin:
+        return f"{origin}/index.html?invite={token}#/setup-password"
+    base = request.build_absolute_uri("/static/index.html")
+    return f"{base}?invite={token}#/setup-password"
+
+
+def revoke_active_employee_invites(employee: Employee) -> int:
+    return EmployeeInvite.objects.filter(
+        employee=employee,
+        used_at__isnull=True,
+        revoked_at__isnull=True,
+        expires_at__gt=timezone.now(),
+    ).update(revoked_at=timezone.now(), updated_at=timezone.now())
+
+
+def create_employee_invite(*, employee: Employee, user: User, invited_email: str, created_by: User | None = None) -> EmployeeInvite:
+    revoke_active_employee_invites(employee)
+    return EmployeeInvite.objects.create(
+        employee=employee,
+        user=user,
+        invited_email=invited_email,
+        created_by=created_by,
+    )
+
+
+def send_employee_invite_email(request, invite: EmployeeInvite) -> str:
+    invite_url = build_frontend_invite_url(request, invite.token)
+    send_email(
+        subject="Set up your Headstone Restoration account",
+        text_body=(
+            f"Hello {invite.employee.full_name},\n\n"
+            f"You have been invited to Headstone Restoration as a {invite.employee.get_role_display()}.\n"
+            f"Use this link to set your password and activate your account:\n\n"
+            f"{invite_url}\n\n"
+            f"This setup link expires in {getattr(settings, 'INVITE_EXPIRY_HOURS', 72)} hours."
+        ),
+        recipient_list=[invite.invited_email],
+        purpose="invite",
+        reply_to=[settings.EMAIL_DEFAULT_REPLY_TO] if getattr(settings, "EMAIL_DEFAULT_REPLY_TO", "") else [],
+        metadata={
+            "flow": "employee_invite",
+            "employee_id": invite.employee_id,
+            "invite_id": invite.id,
+        },
+    )
+    return invite_url
+
+
+def get_or_create_user_profile(user: User) -> UserProfile:
+    profile, _ = UserProfile.objects.get_or_create(user=user)
+    return profile
+
+
+def get_customer_for_user(user: User):
+    if getattr(user, "employee", None):
+        return None
+    if user.email:
+        return Customer.objects.filter(email__iexact=user.email).first()
+    return None
+
+
+def serialize_user_profile(request, user: User):
+    profile = get_or_create_user_profile(user)
+    employee = getattr(user, "employee", None)
+    customer = get_customer_for_user(user)
+    full_name = (
+        (employee.full_name if employee else "")
+        or (customer.full_name if customer else "")
+        or user.get_full_name()
+        or user.username
+    )
+    email = (
+        (employee.email if employee else "")
+        or (customer.email if customer else "")
+        or user.email
+        or ""
+    )
+    phone = (
+        (employee.phone if employee else "")
+        or (customer.phone if customer else "")
+        or ""
+    )
+    photo_url = ""
+    if profile.profile_photo:
+        try:
+            photo_url = request.build_absolute_uri(profile.profile_photo.url)
+        except Exception:
+            photo_url = profile.profile_photo.url
+    return UserProfileDetailSerializer(
+        {
+            "full_name": full_name,
+            "email": email,
+            "phone": phone,
+            "date_of_birth": profile.date_of_birth,
+            "address_line1": profile.address_line1,
+            "address_line2": profile.address_line2,
+            "city": profile.city,
+            "state": profile.state,
+            "postal_code": profile.postal_code,
+            "bio": profile.bio,
+            "profile_photo_url": photo_url,
+        }
+    ).data
 
 
 def scheduling_services_queryset():
@@ -76,6 +280,197 @@ def set_service_price(service, amount):
         issued_date=timezone.localdate(),
         total_amount=amount,
     )
+
+
+def resolve_service_type(service_option):
+    if not service_option:
+        return Service.ServiceType.OTHER
+    if service_option.legacy_key in {
+        Service.ServiceType.CLEANING,
+        Service.ServiceType.RESET,
+        Service.ServiceType.LEVELING,
+        Service.ServiceType.REPAIR,
+        Service.ServiceType.ENGRAVING,
+        Service.ServiceType.OTHER,
+    }:
+        return service_option.legacy_key
+    return Service.ServiceType.OTHER
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+@method_decorator(ensure_csrf_cookie, name="dispatch")
+class AuthLoginView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = LoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data["email"].strip().lower()
+        password = serializer.validated_data["password"]
+
+        candidates = User.objects.filter(email__iexact=email)
+        matches = []
+
+        for candidate in candidates:
+            if candidate.check_password(password):
+                session_user = resolve_session_user(candidate, request)
+                if session_user:
+                    matches.append((candidate, session_user))
+
+        if not matches:
+            return Response({"detail": "Invalid email or password."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if len(matches) > 1:
+            return Response(
+                {"detail": "Multiple accounts match this email. Use a unique email for each login."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        user, session_user = matches[0]
+        login(request, user)
+        return Response({"authenticated": True, "user": session_user}, status=status.HTTP_200_OK)
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class AuthLogoutView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        logout(request)
+        return Response({"authenticated": False}, status=status.HTTP_200_OK)
+
+
+@method_decorator(ensure_csrf_cookie, name="dispatch")
+class AuthSessionView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        session_user = resolve_session_user(request.user, request)
+        if not session_user:
+            return Response({"authenticated": False, "user": None}, status=status.HTTP_200_OK)
+        return Response({"authenticated": True, "user": session_user}, status=status.HTTP_200_OK)
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class PasswordSetupView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        serializer = PasswordSetupValidateSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        try:
+            invite = get_employee_invite_or_404(serializer.validated_data["token"])
+        except Http404:
+            return Response({"detail": INVALID_INVITE_MESSAGE}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {
+                "ok": True,
+                "invite": {
+                    "full_name": invite.employee.full_name,
+                    "email": invite.invited_email,
+                    "role": invite.employee.role,
+                    "expires_at": invite.expires_at,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def post(self, request):
+        serializer = PasswordSetupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            invite = get_employee_invite_or_404(serializer.validated_data["token"])
+        except Http404:
+            return Response({"detail": INVALID_INVITE_MESSAGE}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            validate_password(serializer.validated_data["password"], invite.user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"password": list(exc.messages)})
+
+        invite.user.set_password(serializer.validated_data["password"])
+        invite.user.save(update_fields=["password"])
+        invite.used_at = timezone.now()
+        invite.save(update_fields=["used_at", "updated_at"])
+        login(request, invite.user)
+
+        return Response(
+            {"ok": True, "user": resolve_session_user(invite.user, request)},
+            status=status.HTTP_200_OK,
+        )
+
+
+class UserProfileView(APIView):
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get(self, request):
+        return Response(serialize_user_profile(request, request.user), status=status.HTTP_200_OK)
+
+    def patch(self, request):
+        serializer = UserProfileSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        profile = get_or_create_user_profile(user)
+        employee = getattr(user, "employee", None)
+        customer = get_customer_for_user(user)
+        data = serializer.validated_data
+
+        if "full_name" in data:
+            full_name = data["full_name"].strip()
+            if employee:
+                employee.full_name = full_name
+                employee.save(update_fields=["full_name", "updated_at"])
+            elif customer:
+                customer.full_name = full_name
+                customer.save(update_fields=["full_name", "updated_at"])
+            else:
+                parts = full_name.split(" ", 1)
+                user.first_name = parts[0] if parts else ""
+                user.last_name = parts[1] if len(parts) > 1 else ""
+
+        if "email" in data:
+            email = data["email"].strip()
+            previous_email = user.email
+            user.email = email
+            if employee:
+                employee.email = email
+                employee.save(update_fields=["email", "updated_at"])
+            if customer and (not previous_email or customer.email.lower() == previous_email.lower()):
+                customer.email = email
+                customer.save(update_fields=["email", "updated_at"])
+
+        if "phone" in data:
+            phone = data["phone"].strip()
+            if employee:
+                employee.phone = phone
+                employee.save(update_fields=["phone", "updated_at"])
+            if customer:
+                customer.phone = phone
+                customer.save(update_fields=["phone", "updated_at"])
+
+        user.save()
+
+        profile.date_of_birth = data.get("date_of_birth", profile.date_of_birth)
+        profile.address_line1 = data.get("address_line1", profile.address_line1)
+        profile.address_line2 = data.get("address_line2", profile.address_line2)
+        profile.city = data.get("city", profile.city)
+        profile.state = data.get("state", profile.state)
+        profile.postal_code = data.get("postal_code", profile.postal_code)
+        profile.bio = data.get("bio", profile.bio)
+
+        if data.get("remove_profile_photo"):
+            if profile.profile_photo:
+                profile.profile_photo.delete(save=False)
+            profile.profile_photo = ""
+        elif "profile_photo" in data:
+            if profile.profile_photo:
+                profile.profile_photo.delete(save=False)
+            profile.profile_photo = data["profile_photo"]
+
+        profile.save()
+        return Response(serialize_user_profile(request, user), status=status.HTTP_200_OK)
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -160,15 +555,35 @@ class SchedulingServiceCreateView(APIView):
         serializer.is_valid(raise_exception=True)
 
         memorial = get_object_or_404(Memorial, id=serializer.validated_data["memorial_id"])
-        service_type = serializer.validated_data.get("service_type", Service.ServiceType.OTHER)
-        initial_price = serializer.validated_data.get("initial_price")
+        service_option = None
+        service_option_id = serializer.validated_data.get("service_option_id")
+        if service_option_id:
+            service_option = get_object_or_404(ServiceOption, id=service_option_id, is_active=True)
 
-        service = Service.objects.create(
-            memorial=memorial,
-            service_type=service_type,
-            status=Service.Status.DRAFT,
-        )
-        set_service_price(service, initial_price)
+        service_type = serializer.validated_data.get("service_type")
+        if service_option:
+            service_type = resolve_service_type(service_option)
+        if not service_type:
+            service_type = Service.ServiceType.OTHER
+        initial_price = serializer.validated_data.get("initial_price")
+        gps_lat = serializer.validated_data.get("gps_lat")
+        gps_lng = serializer.validated_data.get("gps_lng")
+
+        with transaction.atomic():
+            if gps_lat is not None and gps_lng is not None:
+                plot = memorial.plot
+                plot.gps_lat = gps_lat
+                plot.gps_lng = gps_lng
+                plot.save(update_fields=["gps_lat", "gps_lng", "updated_at"])
+
+            service = Service.objects.create(
+                memorial=memorial,
+                service_option=service_option,
+                service_type=service_type,
+                status=Service.Status.DRAFT,
+            )
+            set_service_price(service, initial_price)
+
         payload = SchedulingServiceSerializer(
             scheduling_services_queryset()
             .get(id=service.id)
@@ -177,19 +592,82 @@ class SchedulingServiceCreateView(APIView):
 
 
 @method_decorator(csrf_exempt, name="dispatch")
+class CompleteServiceView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def post(self, request, service_id):
+        service = get_object_or_404(Service, id=service_id)
+        old_status = service.status
+        service.status = Service.Status.COMPLETED
+        service.completed_date = timezone.localdate()
+        service.save(update_fields=["status", "completed_date", "updated_at"])
+
+        employee = getattr(request.user, "employee", None) if getattr(request.user, "is_authenticated", False) else None
+        if old_status != Service.Status.COMPLETED:
+            service.status_history.create(
+                old_status=old_status,
+                new_status=Service.Status.COMPLETED,
+                changed_by=employee,
+            )
+
+        payload = SchedulingServiceSerializer(
+            scheduling_services_queryset()
+            .filter(id=service.id)
+            .first()
+            or service
+        ).data
+        return Response({"ok": True, "service": payload}, status=status.HTTP_200_OK)
+
+
+class ServiceOptionListCreateView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def get(self, request):
+        include_inactive = request.query_params.get("include_inactive") in {"1", "true", "True"}
+        qs = ServiceOption.objects.all()
+        if not include_inactive:
+            qs = qs.filter(is_active=True)
+        return Response(ServiceOptionSerializer(qs.order_by("sort_order", "name"), many=True).data)
+
+    def post(self, request):
+        serializer = ServiceOptionUpsertSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        option = serializer.save()
+        return Response({"service_option": ServiceOptionSerializer(option).data}, status=status.HTTP_201_CREATED)
+
+
+class ServiceOptionDetailView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def patch(self, request, service_option_id):
+        option = get_object_or_404(ServiceOption, id=service_option_id)
+        serializer = ServiceOptionUpsertSerializer(option, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        option = serializer.save()
+        return Response({"service_option": ServiceOptionSerializer(option).data}, status=status.HTTP_200_OK)
+
+    def delete(self, request, service_option_id):
+        option = get_object_or_404(ServiceOption, id=service_option_id)
+        option.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@method_decorator(csrf_exempt, name="dispatch")
 class SendCustomerEmailView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = [BasicAuthentication]
 
     @staticmethod
-    def _render_template(template: str, customer: Customer) -> str:
-        full_name = customer.full_name or ""
+    def _render_template(template: str, *, full_name: str = "", email: str = "") -> str:
         first_name = full_name.split(" ")[0] if full_name else "Client"
         replacements = {
             "{{client_name}}": full_name or "Client",
             "{{customer_name}}": full_name or "Client",
             "{{first_name}}": first_name,
-            "{{email}}": customer.email or "",
+            "{{email}}": email or "",
         }
         result = template
         for token, value in replacements.items():
@@ -200,7 +678,8 @@ class SendCustomerEmailView(APIView):
         serializer = SendCustomerEmailSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        customer_ids = serializer.validated_data["customer_ids"]
+        customer_ids = serializer.validated_data.get("customer_ids") or []
+        manual_recipients = serializer.validated_data.get("recipients") or []
         subject_template = serializer.validated_data["subject"]
         body_template = serializer.validated_data["body"]
 
@@ -215,33 +694,89 @@ class SendCustomerEmailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "headstone@restoration.com")
+        from_email = resolve_from_email(purpose="panel")
         sent = []
         skipped = []
         failed = []
+        seen_emails = set()
+        recipients = []
 
         for customer_id in customer_ids:
             customer = customers[customer_id]
-            if not customer.email:
-                skipped.append({"customer_id": customer.id, "name": customer.full_name, "reason": "missing_email"})
-                continue
-
-            rendered_subject = self._render_template(subject_template, customer)
-            rendered_body = self._render_template(body_template, customer)
-            try:
-                send_mail(
-                    subject=rendered_subject,
-                    message=rendered_body,
-                    from_email=from_email,
-                    recipient_list=[customer.email],
-                    fail_silently=False,
-                )
-                sent.append({"customer_id": customer.id, "name": customer.full_name, "email": customer.email})
-            except Exception as exc:  # pragma: no cover - defensive for SMTP runtime failures
-                failed.append({
+            recipients.append(
+                {
                     "customer_id": customer.id,
                     "name": customer.full_name,
-                    "email": customer.email,
+                    "email": customer.email or "",
+                    "source": "customer",
+                }
+            )
+
+        for recipient in manual_recipients:
+            recipients.append(
+                {
+                    "customer_id": recipient.get("customer_id"),
+                    "name": recipient.get("name", ""),
+                    "email": recipient["email"],
+                    "source": "manual",
+                }
+            )
+
+        for recipient in recipients:
+            raw_email = recipient["email"].strip().lower()
+            if not raw_email:
+                skipped.append({
+                    "customer_id": recipient.get("customer_id"),
+                    "name": recipient.get("name") or "",
+                    "reason": "missing_email",
+                })
+                continue
+            if raw_email in seen_emails:
+                skipped.append({
+                    "customer_id": recipient.get("customer_id"),
+                    "name": recipient.get("name") or "",
+                    "email": raw_email,
+                    "reason": "duplicate_email",
+                })
+                continue
+            seen_emails.add(raw_email)
+
+            rendered_subject = self._render_template(
+                subject_template,
+                full_name=recipient.get("name", ""),
+                email=raw_email,
+            )
+            rendered_body = self._render_template(
+                body_template,
+                full_name=recipient.get("name", ""),
+                email=raw_email,
+            )
+            try:
+                send_email(
+                    subject=rendered_subject,
+                    text_body=rendered_body,
+                    from_email=from_email,
+                    recipient_list=[raw_email],
+                    purpose="panel",
+                    reply_to=[settings.EMAIL_DEFAULT_REPLY_TO] if getattr(settings, "EMAIL_DEFAULT_REPLY_TO", "") else [],
+                    metadata={
+                        "flow": "customer_panel",
+                        "customer_id": recipient.get("customer_id"),
+                        "source": recipient.get("source"),
+                    },
+                )
+                sent.append(
+                    {
+                        "customer_id": recipient.get("customer_id"),
+                        "name": recipient.get("name") or "",
+                        "email": raw_email,
+                    }
+                )
+            except EmailDeliveryError as exc:
+                failed.append({
+                    "customer_id": recipient.get("customer_id"),
+                    "name": recipient.get("name") or "",
+                    "email": raw_email,
                     "error": str(exc),
                 })
 
@@ -531,14 +1066,36 @@ class EmployeeRoleDetailView(APIView):
 
     def patch(self, request, employee_id):
         employee = get_object_or_404(Employee, id=employee_id)
-        serializer = EmployeeRoleUpdateSerializer(data=request.data)
+        serializer = EmployeeRoleUpdateSerializer(data=request.data, context={"employee": employee})
         serializer.is_valid(raise_exception=True)
+        user = employee.user
+        employee_fields = []
+        user_fields = []
 
+        if "username" in serializer.validated_data:
+            user.username = serializer.validated_data["username"]
+            user_fields.append("username")
+        if "email" in serializer.validated_data:
+            email = serializer.validated_data["email"]
+            user.email = email
+            employee.email = email
+            user_fields.append("email")
+            employee_fields.append("email")
+        if "full_name" in serializer.validated_data:
+            employee.full_name = serializer.validated_data["full_name"]
+            employee_fields.append("full_name")
+        if "phone" in serializer.validated_data:
+            employee.phone = serializer.validated_data["phone"]
+            employee_fields.append("phone")
         if "role" in serializer.validated_data:
             employee.role = serializer.validated_data["role"]
+            employee_fields.append("role")
         if "is_active" in serializer.validated_data:
             employee.is_active = serializer.validated_data["is_active"]
-        employee.save(update_fields=["role", "is_active", "updated_at"])
+            employee_fields.append("is_active")
+        if user_fields:
+            user.save(update_fields=[*user_fields])
+        employee.save(update_fields=[*dict.fromkeys([*employee_fields, "updated_at"])])
         return Response({"ok": True, "employee": EmployeeRoleSerializer(employee).data}, status=status.HTTP_200_OK)
 
 
@@ -551,22 +1108,84 @@ class EmployeeCreateView(APIView):
         serializer = EmployeeCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         role = serializer.validated_data.get("role", Employee.Role.TECH)
+        send_invite = serializer.validated_data.get("send_invite", True)
+        invite = None
+        invite_url = None
 
         with transaction.atomic():
             user = User.objects.create_user(
                 username=serializer.validated_data["username"],
-                password=serializer.validated_data["password"],
+                email=serializer.validated_data["email"],
             )
+            user.set_unusable_password()
+            user.save(update_fields=["password"])
             employee = Employee.objects.create(
                 user=user,
                 full_name=serializer.validated_data["full_name"],
-                email=serializer.validated_data.get("email", ""),
+                email=serializer.validated_data["email"],
                 phone=serializer.validated_data.get("phone", ""),
                 role=role,
                 is_active=True,
             )
+            if send_invite:
+                invite = create_employee_invite(
+                    employee=employee,
+                    user=user,
+                    invited_email=serializer.validated_data["email"],
+                    created_by=request.user if getattr(request.user, "is_authenticated", False) else None,
+                )
 
-        return Response({"ok": True, "employee": EmployeeRoleSerializer(employee).data}, status=status.HTTP_201_CREATED)
+        if invite:
+            invite_url = send_employee_invite_email(request, invite)
+
+        return Response(
+            {
+                "ok": True,
+                "employee": EmployeeRoleSerializer(employee).data,
+                "invite_sent": bool(invite),
+                "invite": EmployeeInviteSerializer(invite).data if invite else None,
+                "invite_url": invite_url,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class EmployeeInviteResendView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def post(self, request, employee_id):
+        employee = get_object_or_404(Employee.objects.select_related("user"), id=employee_id)
+        if employee.user.has_usable_password():
+            return Response(
+                {"detail": "Employee already activated their account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        invited_email = (employee.email or employee.user.email or "").strip()
+        if not invited_email:
+            return Response(
+                {"detail": "Employee must have an email address before sending an invite."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        invite = create_employee_invite(
+            employee=employee,
+            user=employee.user,
+            invited_email=invited_email,
+            created_by=request.user if getattr(request.user, "is_authenticated", False) else None,
+        )
+        invite_url = send_employee_invite_email(request, invite)
+        return Response(
+            {
+                "ok": True,
+                "employee": EmployeeRoleSerializer(employee).data,
+                "invite": EmployeeInviteSerializer(invite).data,
+                "invite_url": invite_url,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class DashboardSummaryView(APIView):
@@ -611,7 +1230,14 @@ class DashboardSummaryView(APIView):
             .count()
         )
 
-        total_revenue = Invoice.objects.aggregate(total=Sum("total_amount"))["total"] or 0
+        total_revenue = (
+            Invoice.objects.filter(service__status=Service.Status.COMPLETED)
+            .aggregate(total=Sum("total_amount"))["total"] or 0
+        )
+        projected_revenue = (
+            Invoice.objects.filter(service__status__in=[Service.Status.SCHEDULED, Service.Status.IN_PROGRESS])
+            .aggregate(total=Sum("total_amount"))["total"] or 0
+        )
 
         recent_completed_qs = (
             base_qs.filter(status=Service.Status.COMPLETED)
@@ -630,6 +1256,7 @@ class DashboardSummaryView(APIView):
         data = {
             "summary": {
                 "total_revenue": float(total_revenue),
+                "projected_revenue": float(projected_revenue),
                 "active_services": active_qs.count(),
                 "services_today": scheduled_today,
                 "crews_active": crew_count,

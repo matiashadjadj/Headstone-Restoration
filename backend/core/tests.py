@@ -1,9 +1,16 @@
 from unittest.mock import patch
 
+from django.core import mail
+from django.contrib.auth.models import User
+from django.test.client import BOUNDARY, MULTIPART_CONTENT, encode_multipart
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
-from core.models import Customer, Invoice, InvoiceItem, Payment
+from communications.exceptions import EmailDeliveryError
+from communications.services import send_email
+from core.models import Cemetery, Customer, Employee, EmployeeInvite, Invoice, InvoiceItem, Memorial, Payment, Plot, Service, ServiceOption, UserProfile
 
 
 @override_settings(STRIPE_SECRET_KEY="sk_test_dummy", STRIPE_PUBLISHABLE_KEY="pk_test_dummy")
@@ -102,3 +109,698 @@ class StripeCheckoutFlowTests(TestCase):
         self.assertEqual(payment.status, Payment.Status.SUCCEEDED)
         self.assertEqual(payment.stripe_payment_intent_id, "pi_123")
         self.assertEqual(payment.receipt_url, "https://pay.stripe.com/receipts/123")
+
+
+@override_settings(
+    EMAIL_PROVIDER="django",
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    DEFAULT_FROM_EMAIL="default@example.com",
+    PANEL_FROM_EMAIL="panel@example.com",
+)
+class EmailServiceTests(TestCase):
+    def test_send_email_uses_reusable_django_provider(self):
+        result = send_email(
+            subject="Project update",
+            text_body="Everything is on schedule.",
+            recipient_list=["customer@example.com"],
+            purpose="panel",
+        )
+
+        self.assertEqual(result.provider, "django")
+        self.assertEqual(result.recipient_count, 1)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].from_email, "panel@example.com")
+        self.assertEqual(mail.outbox[0].to, ["customer@example.com"])
+
+    @override_settings(EMAIL_PROVIDER="unsupported")
+    def test_send_email_rejects_unknown_provider(self):
+        with self.assertRaises(EmailDeliveryError):
+            send_email(
+                subject="Project update",
+                text_body="Everything is on schedule.",
+                recipient_list=["customer@example.com"],
+            )
+
+
+@override_settings(
+    EMAIL_PROVIDER="django",
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    DEFAULT_FROM_EMAIL="default@example.com",
+    PANEL_FROM_EMAIL="panel@example.com",
+)
+class SendCustomerEmailViewTests(TestCase):
+    def setUp(self):
+        self.customer = Customer.objects.create(
+            full_name="Sarah Johnson",
+            email="sarah@example.com",
+        )
+        self.customer_missing_email = Customer.objects.create(
+            full_name="No Email Customer",
+            email="",
+        )
+
+    def test_email_panel_sends_via_shared_service(self):
+        response = self.client.post(
+            reverse("emails-send"),
+            data={
+                "customer_ids": [self.customer.id],
+                "subject": "Hello {{first_name}}",
+                "body": "Emailing {{email}}",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["from_email"], "panel@example.com")
+        self.assertEqual(payload["sent_count"], 1)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].subject, "Hello Sarah")
+        self.assertEqual(mail.outbox[0].body, "Emailing sarah@example.com")
+
+    def test_email_panel_sends_to_manual_recipients(self):
+        response = self.client.post(
+            reverse("emails-send"),
+            data={
+                "recipients": [
+                    {"email": "manual@example.com", "name": "Manual Recipient"},
+                ],
+                "subject": "Hello {{client_name}}",
+                "body": "Emailing {{email}}",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["sent_count"], 1)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].subject, "Hello Manual Recipient")
+        self.assertEqual(mail.outbox[0].body, "Emailing manual@example.com")
+
+    def test_email_panel_deduplicates_customer_and_manual_recipients(self):
+        response = self.client.post(
+            reverse("emails-send"),
+            data={
+                "customer_ids": [self.customer.id],
+                "recipients": [
+                    {"email": "sarah@example.com", "name": "Sarah Duplicate"},
+                ],
+                "subject": "Hello",
+                "body": "Testing",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["sent_count"], 1)
+        self.assertEqual(payload["skipped_count"], 1)
+        self.assertEqual(payload["skipped"][0]["reason"], "duplicate_email")
+
+    @patch("core.api.views.send_email")
+    def test_email_panel_reports_partial_failures(self, mocked_send_email):
+        def side_effect(**kwargs):
+            if kwargs["recipient_list"] == ["sarah@example.com"]:
+                raise EmailDeliveryError("SMTP unavailable")
+            return None
+
+        mocked_send_email.side_effect = side_effect
+
+        response = self.client.post(
+            reverse("emails-send"),
+            data={
+                "customer_ids": [self.customer.id, self.customer_missing_email.id],
+                "subject": "Hello",
+                "body": "Testing",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 207)
+        payload = response.json()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["sent_count"], 0)
+        self.assertEqual(payload["skipped_count"], 1)
+        self.assertEqual(payload["failed_count"], 1)
+        self.assertEqual(payload["failed"][0]["error"], "SMTP unavailable")
+
+
+class AuthSessionTests(TestCase):
+    def test_login_maps_manager_employee_to_employee_layout(self):
+        user = User.objects.create_user(username="manager_demo", password="secret123", email="manager@example.com")
+        Employee.objects.create(
+            user=user,
+            full_name="Morgan Manager",
+            email="manager@example.com",
+            role=Employee.Role.MANAGER,
+        )
+
+        response = self.client.post(
+            reverse("auth-login"),
+            data={"email": "manager@example.com", "password": "secret123"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["authenticated"])
+        self.assertEqual(payload["user"]["frontend_role"], "employee")
+        self.assertEqual(payload["user"]["source_role"], Employee.Role.MANAGER)
+
+    def test_login_maps_technician_employee_to_employee_layout(self):
+        user = User.objects.create_user(username="tech_demo", password="secret123", email="tech@example.com")
+        Employee.objects.create(
+            user=user,
+            full_name="Taylor Tech",
+            email="tech@example.com",
+            role=Employee.Role.TECH,
+        )
+
+        response = self.client.post(
+            reverse("auth-login"),
+            data={"email": "tech@example.com", "password": "secret123"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["user"]["frontend_role"], "employee")
+
+    def test_login_maps_front_desk_employee_to_frontdesk_layout(self):
+        user = User.objects.create_user(username="desk_demo", password="secret123", email="desk@example.com")
+        Employee.objects.create(
+            user=user,
+            full_name="Fran Front Desk",
+            email="desk@example.com",
+            role=Employee.Role.FRONT_DESK,
+        )
+
+        response = self.client.post(
+            reverse("auth-login"),
+            data={"email": "desk@example.com", "password": "secret123"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["user"]["frontend_role"], "frontdesk")
+
+    def test_login_maps_customer_by_matching_email(self):
+        Customer.objects.create(full_name="Cora Customer", email="cora@example.com")
+        User.objects.create_user(username="cora_user", password="secret123", email="cora@example.com")
+
+        response = self.client.post(
+            reverse("auth-login"),
+            data={"email": "cora@example.com", "password": "secret123"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["user"]["frontend_role"], "customer")
+        self.assertEqual(payload["user"]["source_role"], "customer")
+
+    def test_login_rejects_unmapped_user(self):
+        User.objects.create_user(username="orphan_user", password="secret123", email="orphan@example.com")
+
+        response = self.client.post(
+            reverse("auth-login"),
+            data={"email": "orphan@example.com", "password": "secret123"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_login_rejects_staff_user_without_employee_mapping(self):
+        User.objects.create_user(
+            username="staff_only",
+            password="secret123",
+            email="staff@example.com",
+            is_staff=True,
+        )
+
+        response = self.client.post(
+            reverse("auth-login"),
+            data={"email": "staff@example.com", "password": "secret123"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_session_returns_unauthenticated_without_login(self):
+        response = self.client.get(reverse("auth-session"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"authenticated": False, "user": None})
+
+    def test_login_rejects_duplicate_staff_accounts_without_employee_mapping(self):
+        User.objects.create_user(username="dup_admin_1", password="secret123", email="dup@example.com", is_staff=True)
+        User.objects.create_user(username="dup_admin_2", password="secret123", email="dup@example.com", is_staff=True)
+
+        response = self.client.post(
+            reverse("auth-login"),
+            data={"email": "dup@example.com", "password": "secret123"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_admin_can_create_employee_invite_and_send_setup_email(self):
+        response = self.client.post(
+            reverse("manage-employees-create"),
+            data={
+                "username": "crew_member",
+                "full_name": "Crew Member",
+                "email": "crew@example.com",
+                "phone": "555-1000",
+                "role": Employee.Role.TECH,
+            },
+            content_type="application/json",
+            HTTP_ORIGIN="http://127.0.0.1:5173",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        invite = EmployeeInvite.objects.get(invited_email="crew@example.com")
+        user = User.objects.get(username="crew_member")
+        self.assertFalse(user.has_usable_password())
+        self.assertEqual(payload["employee"]["email"], "crew@example.com")
+        self.assertIn("?invite=", payload["invite_url"])
+        self.assertTrue(payload["invite_sent"])
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(invite.token, mail.outbox[0].body)
+
+    @override_settings(EMAIL_FRONTEND_BASE_URL="https://app.example.com")
+    def test_admin_create_employee_invite_uses_configured_frontend_base_url(self):
+        response = self.client.post(
+            reverse("manage-employees-create"),
+            data={
+                "username": "crew_member_two",
+                "full_name": "Crew Member Two",
+                "email": "crew2@example.com",
+                "phone": "555-1001",
+                "role": Employee.Role.TECH,
+            },
+            content_type="application/json",
+            HTTP_ORIGIN="http://127.0.0.1:5173",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.json()["invite_url"].startswith("https://app.example.com/index.html?invite="))
+
+    def test_admin_can_create_employee_without_sending_invite(self):
+        response = self.client.post(
+            reverse("manage-employees-create"),
+            data={
+                "username": "crew_member_no_invite",
+                "full_name": "Crew Member No Invite",
+                "email": "crew-no-invite@example.com",
+                "phone": "555-1002",
+                "role": Employee.Role.TECH,
+                "send_invite": False,
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertFalse(payload["invite_sent"])
+        self.assertIsNone(payload["invite"])
+        self.assertIsNone(payload["invite_url"])
+        self.assertEqual(EmployeeInvite.objects.count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_admin_can_update_employee_details(self):
+        user = User.objects.create_user(username="crew_old", email="old@example.com")
+        employee = Employee.objects.create(
+            user=user,
+            full_name="Old Name",
+            email="old@example.com",
+            phone="555-0100",
+            role=Employee.Role.TECH,
+            is_active=True,
+        )
+
+        response = self.client.patch(
+            reverse("manage-employee-detail", args=[employee.id]),
+            data={
+                "username": "crew_new",
+                "full_name": "Updated Name",
+                "email": "new@example.com",
+                "phone": "555-0101",
+                "role": Employee.Role.MANAGER,
+                "is_active": False,
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        user.refresh_from_db()
+        employee.refresh_from_db()
+        self.assertEqual(user.username, "crew_new")
+        self.assertEqual(user.email, "new@example.com")
+        self.assertEqual(employee.full_name, "Updated Name")
+        self.assertEqual(employee.email, "new@example.com")
+        self.assertEqual(employee.phone, "555-0101")
+        self.assertEqual(employee.role, Employee.Role.MANAGER)
+        self.assertFalse(employee.is_active)
+
+    def test_employee_can_set_password_from_invite(self):
+        user = User.objects.create_user(username="invitee_user", email="invitee@example.com")
+        user.set_unusable_password()
+        user.save(update_fields=["password"])
+        employee = Employee.objects.create(
+            user=user,
+            full_name="Invitee User",
+            email="invitee@example.com",
+            role=Employee.Role.TECH,
+        )
+        invite = EmployeeInvite.objects.create(
+            employee=employee,
+            user=user,
+            invited_email="invitee@example.com",
+        )
+
+        response = self.client.post(
+            reverse("auth-password-setup"),
+            data={
+                "token": invite.token,
+                "password": "welcome123",
+                "password_confirm": "welcome123",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        invite.refresh_from_db()
+        user.refresh_from_db()
+        self.assertIsNotNone(invite.used_at)
+        self.assertTrue(user.check_password("welcome123"))
+        self.assertEqual(response.json()["user"]["frontend_role"], "employee")
+
+    def test_password_setup_get_rejects_expired_token(self):
+        user = User.objects.create_user(username="expired_user", email="expired@example.com")
+        user.set_unusable_password()
+        user.save(update_fields=["password"])
+        employee = Employee.objects.create(
+            user=user,
+            full_name="Expired Invite User",
+            email="expired@example.com",
+            role=Employee.Role.TECH,
+        )
+        invite = EmployeeInvite.objects.create(
+            employee=employee,
+            user=user,
+            invited_email="expired@example.com",
+        )
+        invite.expires_at = timezone.now() - timezone.timedelta(minutes=5)
+        invite.save(update_fields=["expires_at", "updated_at"])
+
+        response = self.client.get(
+            reverse("auth-password-setup"),
+            {"token": invite.token},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Invite is invalid or expired.")
+
+    def test_password_setup_post_rejects_invalid_token(self):
+        response = self.client.post(
+            reverse("auth-password-setup"),
+            data={
+                "token": "not-a-real-token",
+                "password": "welcome123",
+                "password_confirm": "welcome123",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "Invite is invalid or expired.")
+
+    def test_password_setup_rejects_revoked_token_after_resend(self):
+        response = self.client.post(
+            reverse("manage-employees-create"),
+            data={
+                "username": "crew_resend",
+                "full_name": "Crew Resend",
+                "email": "crew-resend@example.com",
+                "phone": "555-1003",
+                "role": Employee.Role.TECH,
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        employee_id = response.json()["employee"]["id"]
+        first_invite = EmployeeInvite.objects.get(employee_id=employee_id)
+
+        resend_response = self.client.post(
+            reverse("manage-employee-invite-resend", args=[employee_id]),
+            content_type="application/json",
+        )
+
+        self.assertEqual(resend_response.status_code, 200)
+        first_invite.refresh_from_db()
+        self.assertIsNotNone(first_invite.revoked_at)
+        second_invite = EmployeeInvite.objects.filter(employee_id=employee_id).exclude(id=first_invite.id).get()
+        self.assertNotEqual(first_invite.token, second_invite.token)
+
+        old_token_response = self.client.post(
+            reverse("auth-password-setup"),
+            data={
+                "token": first_invite.token,
+                "password": "welcome123",
+                "password_confirm": "welcome123",
+            },
+            content_type="application/json",
+        )
+        new_token_response = self.client.get(
+            reverse("auth-password-setup"),
+            {"token": second_invite.token},
+        )
+
+        self.assertEqual(old_token_response.status_code, 400)
+        self.assertEqual(old_token_response.json()["detail"], "Invite is invalid or expired.")
+        self.assertEqual(new_token_response.status_code, 200)
+
+    def test_admin_can_resend_employee_invite(self):
+        create_response = self.client.post(
+            reverse("manage-employees-create"),
+            data={
+                "username": "crew_member_resend",
+                "full_name": "Crew Member Resend",
+                "email": "crew-resend-two@example.com",
+                "phone": "555-1004",
+                "role": Employee.Role.TECH,
+            },
+            content_type="application/json",
+        )
+        employee_id = create_response.json()["employee"]["id"]
+
+        response = self.client.post(
+            reverse("manage-employee-invite-resend", args=[employee_id]),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("?invite=", payload["invite_url"])
+        self.assertEqual(payload["invite"]["invited_email"], "crew-resend-two@example.com")
+
+    def test_resend_invite_rejects_activated_employee(self):
+        user = User.objects.create_user(username="active_user", email="active@example.com", password="welcome123")
+        employee = Employee.objects.create(
+            user=user,
+            full_name="Active User",
+            email="active@example.com",
+            role=Employee.Role.TECH,
+        )
+
+        response = self.client.post(
+            reverse("manage-employee-invite-resend", args=[employee.id]),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "Employee already activated their account.")
+
+    def test_profile_endpoint_reads_and_updates_employee_profile(self):
+        user = User.objects.create_user(username="profile_user", password="secret123", email="profile@example.com")
+        Employee.objects.create(
+            user=user,
+            full_name="Profile User",
+            email="profile@example.com",
+            phone="555-1111",
+            role=Employee.Role.TECH,
+        )
+        self.client.force_login(user)
+
+        get_response = self.client.get(reverse("auth-profile"))
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(get_response.json()["full_name"], "Profile User")
+
+        photo = SimpleUploadedFile("avatar.png", b"fake-image-bytes", content_type="image/png")
+        patch_response = self.client.generic(
+            "PATCH",
+            reverse("auth-profile"),
+            encode_multipart(
+                BOUNDARY,
+                {
+                    "full_name": "Updated User",
+                    "email": "updated@example.com",
+                    "phone": "555-2222",
+                    "date_of_birth": "1990-05-10",
+                    "city": "Boston",
+                    "bio": "Field tech",
+                    "profile_photo": photo,
+                },
+            ),
+            content_type=MULTIPART_CONTENT,
+        )
+
+        self.assertEqual(patch_response.status_code, 200)
+        user.refresh_from_db()
+        employee = user.employee
+        employee.refresh_from_db()
+        profile = UserProfile.objects.get(user=user)
+        self.assertEqual(user.email, "updated@example.com")
+        self.assertEqual(employee.full_name, "Updated User")
+        self.assertEqual(employee.phone, "555-2222")
+        self.assertEqual(str(profile.date_of_birth), "1990-05-10")
+        self.assertEqual(profile.city, "Boston")
+        self.assertTrue(profile.profile_photo.name.startswith("profile_photos/"))
+
+
+class ServiceOptionTests(TestCase):
+    def setUp(self):
+        self.customer = Customer.objects.create(full_name="Casey Client", email="casey@example.com")
+        self.cemetery = Cemetery.objects.create(name="Greenwood")
+        self.plot = Plot.objects.create(cemetery=self.cemetery, section="A", row="1", plot_number="12")
+        self.memorial = Memorial.objects.create(customer=self.customer, plot=self.plot)
+
+    def test_can_create_service_option_from_manage_endpoint(self):
+        response = self.client.post(
+            reverse("manage-service-options"),
+            data={"name": "Bronze Reset", "sort_order": 15, "is_active": True},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()["service_option"]
+        self.assertEqual(payload["name"], "Bronze Reset")
+        self.assertTrue(ServiceOption.objects.filter(name="Bronze Reset").exists())
+
+    def test_create_service_uses_service_option(self):
+        option = ServiceOption.objects.create(name="Bronze Reset", sort_order=15)
+
+        response = self.client.post(
+            reverse("scheduling-service-create"),
+            data={"memorial_id": self.memorial.id, "service_option_id": option.id, "initial_price": "85.00"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        service = Service.objects.get(id=response.json()["service"]["id"])
+        self.assertEqual(service.service_option_id, option.id)
+        self.assertEqual(response.json()["service"]["service_type_label"], "Bronze Reset")
+
+
+class SchedulingServiceCreateTests(TestCase):
+    def setUp(self):
+        self.customer = Customer.objects.create(full_name="Chris Customer", email="chris@example.com")
+        self.cemetery = Cemetery.objects.create(name="Oak Rest Cemetery")
+        self.plot = Plot.objects.create(cemetery=self.cemetery, section="A", row="2", plot_number="14")
+        self.memorial = Memorial.objects.create(customer=self.customer, plot=self.plot)
+
+    def test_create_service_persists_valid_gps_coordinates(self):
+        response = self.client.post(
+            reverse("scheduling-service-create"),
+            data={
+                "memorial_id": self.memorial.id,
+                "service_type": Service.ServiceType.CLEANING,
+                "initial_price": "150.00",
+                "gps_lat": "40.712776",
+                "gps_lng": "-74.005974",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.plot.refresh_from_db()
+        payload = response.json()["service"]
+        self.assertEqual(str(self.plot.gps_lat), "40.712776")
+        self.assertEqual(str(self.plot.gps_lng), "-74.005974")
+        self.assertEqual(payload["gps_lat"], "40.712776")
+        self.assertEqual(payload["gps_lng"], "-74.005974")
+
+    def test_admin_can_mark_service_complete(self):
+        service = Service.objects.create(
+            memorial=self.memorial,
+            service_type=Service.ServiceType.CLEANING,
+            status=Service.Status.SCHEDULED,
+            scheduled_date="2026-03-25",
+        )
+
+        response = self.client.post(
+            reverse("service-complete", args=[service.id]),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        service.refresh_from_db()
+        self.assertEqual(service.status, Service.Status.COMPLETED)
+        self.assertIsNotNone(service.completed_date)
+
+    def test_create_service_rejects_partial_gps_coordinates(self):
+        response = self.client.post(
+            reverse("scheduling-service-create"),
+            data={
+                "memorial_id": self.memorial.id,
+                "gps_lat": "40.712776",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Provide both gps_lat and gps_lng", response.json()["non_field_errors"][0])
+
+    def test_create_service_rejects_out_of_range_gps_coordinates(self):
+        response = self.client.post(
+            reverse("scheduling-service-create"),
+            data={
+                "memorial_id": self.memorial.id,
+                "gps_lat": "91.000000",
+                "gps_lng": "-74.005974",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("between -90 and 90", response.json()["gps_lat"][0])
+
+
+class DashboardSummaryTests(TestCase):
+    def test_total_revenue_uses_completed_jobs_and_projected_uses_scheduled_jobs(self):
+        customer = Customer.objects.create(full_name="Revenue Customer", email="revenue@example.com")
+        cemetery = Cemetery.objects.create(name="Revenue Cemetery")
+        plot = Plot.objects.create(cemetery=cemetery, section="A", row="1", plot_number="1")
+        memorial = Memorial.objects.create(customer=customer, plot=plot)
+
+        completed_service = Service.objects.create(memorial=memorial, status=Service.Status.COMPLETED)
+        scheduled_service = Service.objects.create(memorial=memorial, status=Service.Status.SCHEDULED)
+        in_progress_service = Service.objects.create(memorial=memorial, status=Service.Status.IN_PROGRESS)
+
+        Invoice.objects.create(customer=customer, service=completed_service, total_amount="100.00")
+        Invoice.objects.create(customer=customer, service=scheduled_service, total_amount="50.00")
+        Invoice.objects.create(customer=customer, service=in_progress_service, total_amount="25.00")
+
+        response = self.client.get(reverse("dashboard-summary"))
+
+        self.assertEqual(response.status_code, 200)
+        summary = response.json()["summary"]
+        self.assertEqual(summary["total_revenue"], 100.0)
+        self.assertEqual(summary["projected_revenue"], 75.0)

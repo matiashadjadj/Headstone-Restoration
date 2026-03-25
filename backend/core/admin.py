@@ -1,4 +1,6 @@
 from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
+from django.contrib.auth.models import User
 
 from . import models
 
@@ -31,6 +33,12 @@ class ServiceStatusHistoryInline(admin.TabularInline):
 class PhotoInline(admin.TabularInline):
     model = models.Photo
     extra = 0
+
+
+class EmployeeInline(admin.StackedInline):
+    model = models.Employee
+    extra = 0
+    fields = ("full_name", "email", "phone", "role", "is_active")
 
 
 # --- Model admin classes ---
@@ -67,8 +75,30 @@ class MemorialAdmin(TimestampedReadonlyMixin, admin.ModelAdmin):
 @admin.register(models.Employee)
 class EmployeeAdmin(TimestampedReadonlyMixin, admin.ModelAdmin):
     list_display = ("full_name", "email", "phone", "role", "is_active")
+    list_editable = ("email", "phone", "role", "is_active")
     list_filter = ("role", "is_active")
     search_fields = ("full_name", "email", "phone")
+
+
+admin.site.unregister(User)
+
+
+@admin.register(User)
+class UserAdmin(DjangoUserAdmin):
+    list_display = ("username", "email", "first_name", "last_name", "is_staff", "is_active")
+    list_display_links = ("username",)
+    list_editable = ("email", "first_name", "last_name", "is_staff", "is_active")
+    list_filter = ("is_staff", "is_superuser", "is_active", "groups")
+    search_fields = ("username", "email", "first_name", "last_name")
+    inlines = [EmployeeInline]
+
+
+@admin.register(models.ServiceOption)
+class ServiceOptionAdmin(TimestampedReadonlyMixin, admin.ModelAdmin):
+    list_display = ("name", "legacy_key", "is_active", "sort_order")
+    list_filter = ("is_active",)
+    search_fields = ("name", "legacy_key")
+    ordering = ("sort_order", "name")
 
 
 @admin.register(models.Service)
@@ -76,6 +106,7 @@ class ServiceAdmin(TimestampedReadonlyMixin, admin.ModelAdmin):
     list_display = (
         "id",
         "memorial",
+        "service_option",
         "service_type",
         "status",
         "scheduled_date",
