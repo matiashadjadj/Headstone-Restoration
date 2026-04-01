@@ -957,18 +957,23 @@ function SchedulingPage() {
     [services]
   );
 
+  const schedulableServices = useMemo(
+    () => services.filter((svc) => svc.status !== 'completed'),
+    [services]
+  );
+
   const assignedServices = useMemo(
     () => services.filter((svc) => Boolean(svc.technician_id) && svc.status !== 'draft'),
     [services]
   );
 
   useEffect(() => {
-    if (!selectedServiceId || !unassignedServices.length) return;
-    const stillAssignable = unassignedServices.some((svc) => String(svc.id) === String(selectedServiceId));
-    if (!stillAssignable) {
-      syncFormFromService(unassignedServices[0].id, { resetState: false });
+    if (!selectedServiceId || !schedulableServices.length) return;
+    const stillSchedulable = schedulableServices.some((svc) => String(svc.id) === String(selectedServiceId));
+    if (!stillSchedulable) {
+      syncFormFromService(schedulableServices[0].id, { resetState: false });
     }
-  }, [selectedServiceId, unassignedServices]);
+  }, [selectedServiceId, schedulableServices]);
 
   return (
     <>
@@ -1089,7 +1094,7 @@ function SchedulingPage() {
           <div className="card-header">
             <div>
               <h3>Assign Technician</h3>
-              <p className="meta">Use this after the job is created. Technician, start time, and duration are set here.</p>
+              <p className="meta">Use this to assign or reassign a technician, update the start time, or change the duration.</p>
             </div>
           </div>
           {selectedService && (
@@ -1109,7 +1114,7 @@ function SchedulingPage() {
               required
             >
               <option value="">Select a job</option>
-              {unassignedServices.map((svc) => (
+              {schedulableServices.map((svc) => (
                 <option key={svc.id} value={svc.id}>
                   #{svc.id} · {getServiceTypeLabel(svc)} · {svc.memorial_name || 'Memorial'} · {svc.technician_name || 'Unassigned'}
                 </option>
@@ -1151,7 +1156,7 @@ function SchedulingPage() {
             {completeState.error && <div className="form-error">{completeState.error}</div>}
             {completeState.success && <div className="card form-success"><strong>{completeState.success}</strong></div>}
             <button className="primary-btn" type="submit" disabled={submitState.loading}>
-              {submitState.loading ? 'Saving...' : 'Assign Technician'}
+              {submitState.loading ? 'Saving...' : selectedService?.technician_id ? 'Save Assignment' : 'Assign Technician'}
             </button>
             {selectedService && selectedService.status !== 'completed' && (
               <button

@@ -766,6 +766,60 @@ class SchedulingServiceCreateTests(TestCase):
         self.plot = Plot.objects.create(cemetery=self.cemetery, section="A", row="2", plot_number="14")
         self.memorial = Memorial.objects.create(customer=self.customer, plot=self.plot)
 
+    def test_assign_endpoint_reassigns_service_to_different_technician(self):
+        original_user = User.objects.create_user(
+            username="original_tech",
+            password="secret123",
+            email="original-tech@example.com",
+        )
+        original_tech = Employee.objects.create(
+            user=original_user,
+            full_name="Original Tech",
+            email="original-tech@example.com",
+            role=Employee.Role.TECH,
+        )
+        replacement_user = User.objects.create_user(
+            username="replacement_tech",
+            password="secret123",
+            email="replacement-tech@example.com",
+        )
+        replacement_tech = Employee.objects.create(
+            user=replacement_user,
+            full_name="Replacement Tech",
+            email="replacement-tech@example.com",
+            role=Employee.Role.TECH,
+        )
+        service = Service.objects.create(
+            memorial=self.memorial,
+            service_type=Service.ServiceType.CLEANING,
+            status=Service.Status.SCHEDULED,
+            scheduled_start=timezone.now() + timezone.timedelta(days=1),
+            estimated_minutes=90,
+        )
+        ServiceAssignment.objects.create(service=service, employee=original_tech)
+        scheduled_start = timezone.now() + timezone.timedelta(days=2)
+
+        response = self.client.post(
+            f"/api/manager/services/{service.id}/assign/",
+            data={
+                "technician_id": replacement_tech.id,
+                "scheduled_start": scheduled_start.isoformat(),
+                "estimated_minutes": 120,
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        service.refresh_from_db()
+        assignment = ServiceAssignment.objects.get(service=service)
+        payload = response.json()["service"]
+        self.assertEqual(ServiceAssignment.objects.filter(service=service).count(), 1)
+        self.assertEqual(assignment.employee_id, replacement_tech.id)
+        self.assertEqual(service.estimated_minutes, 120)
+        self.assertEqual(service.status, Service.Status.SCHEDULED)
+        self.assertEqual(payload["technician_id"], replacement_tech.id)
+        self.assertEqual(payload["technician_name"], replacement_tech.full_name)
+
     def test_create_service_persists_valid_gps_coordinates(self):
         response = self.client.post(
             reverse("scheduling-service-create"),
