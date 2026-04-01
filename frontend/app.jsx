@@ -500,14 +500,6 @@ function parseRoute(path, role) {
     };
   }
   if (normalized === SETUP_PASSWORD_PATH) {
-    if (hasActiveRole) {
-      return {
-        role: activeRole,
-        page: activeConfig.defaultRoute,
-        config: activeConfig,
-        canonicalPath: `${activeConfig.basePath}/${activeConfig.defaultRoute}`
-      };
-    }
     return {
       role: null,
       page: 'setup-password',
@@ -1770,11 +1762,36 @@ function CemeteriesPage() {
 }
 
 function ArchivePage() {
+  const photosState = useApi('/photos/', [], true, { refreshEvent: 'hs:photos-updated' });
+  const photos = Array.isArray(photosState.data) ? photosState.data : [];
+
   return (
     <>
       <h1 className="page-title">Photos & Archive</h1>
       <p className="page-subtitle">Permanent visual records by memorial.</p>
-      <div className="card"><p className="meta">No photos to display. Integrate photo list API.</p></div>
+      {photosState.error && <div className="card warn">Backend error: {photosState.error}</div>}
+      <div className="card">
+        {photosState.loading && <p className="meta">Loading photos...</p>}
+        {!photosState.loading && photos.length === 0 && <p className="meta">No photos uploaded yet.</p>}
+        {!photosState.loading && photos.length > 0 && (
+          <div className="photo-grid">
+            {photos.map((photo) => (
+              <article key={photo.id} className="photo-card">
+                <div className="photo-card-media">
+                  <img className="photo-card-image" src={photo.image_url} alt={photo.caption || photo.job_title || 'Archive photo'} />
+                  <span className="photo-card-badge">{photo.photo_type_label}</span>
+                </div>
+                <div className="photo-card-body">
+                  <strong className="photo-card-title">{photo.job_title || `Service #${photo.service_id || photo.id}`}</strong>
+                  <span className="photo-card-subtitle">{photo.memorial_name || 'No memorial'}</span>
+                  <div className="photo-card-meta">{photo.cemetery_name || 'No cemetery'}</div>
+                  {photo.caption && <p className="photo-card-caption">{photo.caption}</p>}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
     </>
   );
 }
@@ -2358,22 +2375,238 @@ function OnboardingPage() {
 }
 
 function EmployeeDashboardPage() {
+  const { loading, error, summary, upcoming, recent } = useDashboardData(true);
+
+  const stats = [
+    {
+      label: 'Assigned Jobs',
+      value: summary?.active_services ?? '—',
+      sub: summary ? `${summary.services_today} on your calendar today` : 'Loading assignments'
+    },
+    {
+      label: 'Completion Rate',
+      value: summary ? formatPercent(summary.completion_rate || 0) : '—',
+      sub: 'Your assigned jobs'
+    }
+  ];
+
   return (
     <>
       <h1 className="page-title">Crew Dashboard</h1>
       <p className="page-subtitle">Today's assignments, status updates, and photo tasks.</p>
-      <div className="card"><p className="meta">No crew data yet. Connect crew/assignment API.</p></div>
+
+      {error && <div className="card warn">Backend error: {error}</div>}
+
+      <section className="kpis">
+        {stats.map((stat) => (
+          <div key={stat.label} className="kpi">
+            <span className="kpi-label">{stat.label}</span>
+            <strong>{stat.value}</strong>
+            <small>{stat.sub}</small>
+          </div>
+        ))}
+      </section>
+
+      <section className="grid-2">
+        <div className="card">
+          <h3>Upcoming Assignments</h3>
+          {loading && <p className="meta">Loading assignments...</p>}
+          {!loading && upcoming.length === 0 && <p className="meta">No jobs assigned yet.</p>}
+          {!loading && upcoming.length > 0 && (
+            <ul className="service-list">
+              {upcoming.map((svc) => (
+                <li key={svc.id}>
+                  <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
+                  <span>{svc.cemetery_name || 'Scheduled location'}</span>
+                  <div className="meta">{formatDateTimeShort(svc.scheduled_start)} · {svc.status_display || svc.status}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="card">
+          <h3>Recently Completed</h3>
+          {loading && <p className="meta">Loading completed jobs...</p>}
+          {!loading && recent.length === 0 && <p className="meta">No completed jobs yet.</p>}
+          {!loading && recent.length > 0 && (
+            <ul className="service-list">
+              {recent.map((svc) => (
+                <li key={svc.id}>
+                  <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
+                  <span>{svc.cemetery_name || '—'}</span>
+                  <div className="meta">{formatDateOnly(svc.completed_date)} · {svc.amount != null ? formatCurrency(Number(svc.amount)) : 'No invoice yet'}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
     </>
   );
 }
 
 function EmployeeSchedulingPage() {
+  const servicesState = useApi('/scheduling/services/', [], true, { refreshEvent: 'hs:schedule-updated' });
+  const [services, setServices] = useState([]);
+  const [completeState, setCompleteState] = useState({ loading: false, error: '', success: '' });
+  const [uploadState, setUploadState] = useState({ loading: false, error: '', success: '', serviceId: null });
+
+  useEffect(() => {
+    setServices(Array.isArray(servicesState.data) ? servicesState.data : []);
+  }, [servicesState.data]);
+
+  const futureJobs = useMemo(
+    () => services.filter((svc) => svc.status !== 'completed'),
+    [services]
+  );
+  const pastJobs = useMemo(
+    () => services.filter((svc) => svc.status === 'completed'),
+    [services]
+  );
+
+  async function handleMarkComplete(serviceId) {
+    setCompleteState({ loading: true, error: '', success: '' });
+    try {
+      const res = await apiFetch(`/manager/services/${serviceId}/complete/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (!res.ok) {
+        let payload;
+        try {
+          payload = await res.json();
+        } catch (error) {
+          payload = await res.text();
+        }
+        throw new Error(formatApiError(payload, `Complete failed (${res.status})`));
+      }
+      const json = await res.json();
+      setServices((prev) => prev.filter((item) => item.id !== Number(serviceId)));
+      window.dispatchEvent(new Event('hs:schedule-updated'));
+      setCompleteState({
+        loading: false,
+        error: '',
+        success: `${getServiceTypeLabel(json.service)} marked complete.`
+      });
+    } catch (err) {
+      setCompleteState({ loading: false, error: err.message || 'Failed to complete job.', success: '' });
+    }
+  }
+
+  async function handlePhotoChange(serviceId, event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setUploadState({ loading: true, error: '', success: '', serviceId });
+    try {
+      const formData = new FormData();
+      formData.append('image', file);
+      formData.append('photo_type', 'during');
+
+      const res = await apiFetch(`/manager/services/${serviceId}/photos/`, {
+        method: 'POST',
+        body: formData
+      });
+      const raw = await res.text();
+      let payload = raw;
+      try {
+        payload = raw ? JSON.parse(raw) : null;
+      } catch (error) {
+        payload = raw;
+      }
+      if (!res.ok) {
+        throw new Error(formatApiError(payload, `Upload failed (${res.status})`));
+      }
+      window.dispatchEvent(new Event('hs:photos-updated'));
+      setUploadState({
+        loading: false,
+        error: '',
+        success: 'Photo uploaded.',
+        serviceId: null,
+      });
+    } catch (err) {
+      setUploadState({
+        loading: false,
+        error: err.message || 'Failed to upload photo.',
+        success: '',
+        serviceId: null,
+      });
+    } finally {
+      event.target.value = '';
+    }
+  }
+
   return (
     <>
       <h1 className="page-title">My Schedule</h1>
       <p className="page-subtitle">Crew assignments and upcoming services.</p>
+      {(servicesState.error || completeState.error || uploadState.error) && (
+        <div className="card warn">Backend error: {uploadState.error || completeState.error || servicesState.error}</div>
+      )}
+      {completeState.success && <div className="card success">{completeState.success}</div>}
+      {uploadState.success && <div className="card success">{uploadState.success}</div>}
 
-      <div className="card"><p className="meta">No schedule data yet.</p></div>
+      <div className="card">
+        <h3>Future Jobs</h3>
+        {servicesState.loading && <p className="meta">Loading your schedule...</p>}
+        {!servicesState.loading && futureJobs.length === 0 && <p className="meta">No upcoming assigned jobs right now.</p>}
+        {!servicesState.loading && futureJobs.length > 0 && (
+          <ul className="service-list">
+            {futureJobs.map((svc) => (
+              <li key={svc.id}>
+                <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
+                <span>{svc.cemetery_name || 'Scheduled location'}</span>
+                <div className="meta">
+                  {formatDateTimeShort(svc.scheduled_start)} · {svc.status_display || svc.status || 'Scheduled'}
+                </div>
+                <div className="meta">
+                  {getServiceTypeLabel(svc)}
+                  {svc.estimated_minutes ? ` · ${svc.estimated_minutes} min` : ''}
+                </div>
+                <button
+                  className="primary-btn"
+                  type="button"
+                  onClick={() => handleMarkComplete(svc.id)}
+                  disabled={completeState.loading || svc.status === 'completed'}
+                >
+                  {completeState.loading ? 'Saving...' : 'Completed'}
+                </button>
+                <label className="ghost-btn file-upload-btn">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => handlePhotoChange(svc.id, event)}
+                    disabled={uploadState.loading}
+                    hidden
+                  />
+                  {uploadState.loading && uploadState.serviceId === svc.id ? 'Uploading...' : 'Add Photo'}
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="card">
+        <h3>Past Jobs</h3>
+        {servicesState.loading && <p className="meta">Loading history...</p>}
+        {!servicesState.loading && pastJobs.length === 0 && <p className="meta">No past jobs yet.</p>}
+        {!servicesState.loading && pastJobs.length > 0 && (
+          <ul className="service-list">
+            {pastJobs.map((svc) => (
+              <li key={svc.id}>
+                <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
+                <span>{svc.cemetery_name || 'Scheduled location'}</span>
+                <div className="meta">Completed {formatDateOnly(svc.completed_date)}</div>
+                <div className="meta">
+                  {getServiceTypeLabel(svc)}
+                  {svc.estimated_minutes ? ` · ${svc.estimated_minutes} min` : ''}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </>
   );
 }
@@ -2662,15 +2895,15 @@ function LoginPage({ form, authState, onChange, onSubmit }) {
       <header className="topbar topbar-login"></header>
       <main className="content">
         <h1 className="page-title">Login</h1>
-        <p className="page-subtitle">Sign with email and password.</p>
+        <p className="page-subtitle">Sign in with your email or username and password.</p>
 
         <div className="card auth-card">
           <form className="form" onSubmit={onSubmit}>
-            <label>Email</label>
+            <label>Email or Username</label>
             <input
-              type="email"
+              type="text"
               name="email"
-              autoComplete="email"
+              autoComplete="username"
               value={form.email}
               onChange={onChange}
               required
@@ -2952,6 +3185,9 @@ function App() {
       if (path !== LOGIN_PATH && path !== SETUP_PASSWORD_PATH) navigate(LOGIN_PATH);
       return;
     }
+    if (path === SETUP_PASSWORD_PATH) {
+      return;
+    }
     if (path !== canonicalPath) {
       navigate(canonicalPath);
     }
@@ -3046,10 +3282,11 @@ function App() {
     );
   }
 
+  if (path === SETUP_PASSWORD_PATH) {
+    return <SetupPasswordPage onComplete={handlePasswordSetupComplete} />;
+  }
+
   if (!authState.authenticated) {
-    if (path === SETUP_PASSWORD_PATH) {
-      return <SetupPasswordPage onComplete={handlePasswordSetupComplete} />;
-    }
     return (
       <LoginPage
         form={authForm}

@@ -1,3 +1,5 @@
+from urllib.parse import urlparse
+
 from django.contrib.auth.models import User
 from rest_framework import serializers
 from core.models import (
@@ -72,10 +74,39 @@ class ServiceAssignmentSerializer(serializers.ModelSerializer):
         fields = ["id", "technician"]
 
 
-class AfterPhotoUploadSerializer(serializers.ModelSerializer):
+class PhotoUploadSerializer(serializers.Serializer):
+    image = serializers.FileField()
+    photo_type = serializers.ChoiceField(choices=Photo.PhotoType.choices, required=False, default=Photo.PhotoType.DURING)
+    caption = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
+
+class PhotoArchiveSerializer(serializers.ModelSerializer):
+    memorial_name = serializers.CharField(source="memorial.customer.full_name", read_only=True)
+    cemetery_name = serializers.CharField(source="memorial.plot.cemetery.name", read_only=True)
+    service_id = serializers.IntegerField(read_only=True)
+    job_title = serializers.CharField(source="service.service_type_label", read_only=True)
+    photo_type_label = serializers.CharField(source="get_photo_type_display", read_only=True)
+    image_path = serializers.SerializerMethodField()
+
     class Meta:
         model = Photo
-        fields = ["image"]  # or whatever your file field is named
+        fields = [
+            "id",
+            "memorial_name",
+            "cemetery_name",
+            "service_id",
+            "job_title",
+            "photo_type",
+            "photo_type_label",
+            "caption",
+            "image_url",
+            "image_path",
+            "created_at",
+        ]
+
+    def get_image_path(self, obj):
+        parsed = urlparse(obj.image_url or "")
+        return parsed.path or obj.image_url or ""
 
 
 class DashboardServiceSerializer(serializers.ModelSerializer):
@@ -320,8 +351,14 @@ class EmployeeCreateSerializer(serializers.Serializer):
 
 
 class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    email = serializers.CharField(max_length=150)
     password = serializers.CharField(max_length=128)
+
+    def validate_email(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Enter your email or username.")
+        return value
 
 
 class SessionUserSerializer(serializers.Serializer):

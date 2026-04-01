@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from communications.exceptions import EmailDeliveryError
 from communications.services import send_email
-from core.models import Cemetery, Customer, Employee, EmployeeInvite, Invoice, InvoiceItem, Memorial, Payment, Plot, Service, ServiceOption, UserProfile
+from core.models import Cemetery, Customer, Employee, EmployeeInvite, Invoice, InvoiceItem, Memorial, Payment, Photo, Plot, Service, ServiceAssignment, ServiceOption, UserProfile
 
 
 @override_settings(STRIPE_SECRET_KEY="sk_test_dummy", STRIPE_PUBLISHABLE_KEY="pk_test_dummy")
@@ -308,6 +308,26 @@ class AuthSessionTests(TestCase):
         payload = response.json()
         self.assertEqual(payload["user"]["frontend_role"], "frontdesk")
 
+    def test_login_accepts_username_and_returns_matching_employee_role(self):
+        user = User.objects.create_user(username="crew_demo", password="secret123", email="crew@example.com")
+        Employee.objects.create(
+            user=user,
+            full_name="Casey Crew",
+            email="crew@example.com",
+            role=Employee.Role.TECH,
+        )
+
+        response = self.client.post(
+            reverse("auth-login"),
+            data={"email": "crew_demo", "password": "secret123"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["user"]["username"], "crew_demo")
+        self.assertEqual(payload["user"]["frontend_role"], "employee")
+
     def test_login_maps_customer_by_matching_email(self):
         Customer.objects.create(full_name="Cora Customer", email="cora@example.com")
         User.objects.create_user(username="cora_user", password="secret123", email="cora@example.com")
@@ -367,6 +387,36 @@ class AuthSessionTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
+
+    def test_login_rejects_ambiguous_identifier_when_multiple_accounts_match_credentials(self):
+        admin_user = User.objects.create_user(
+            username="shared_admin",
+            password="secret123",
+            email="shared@example.com",
+            is_superuser=True,
+            is_staff=True,
+        )
+        User.objects.create_user(username="shared@example.com", password="secret123", email="other@example.com")
+        Employee.objects.create(
+            user=admin_user,
+            full_name="Shared Admin",
+            email="shared@example.com",
+            role=Employee.Role.ADMIN,
+        )
+        Customer.objects.create(full_name="Shared Customer", email="other@example.com")
+        User.objects.create_user(
+            username="Shared@Example.com",
+            password="secret123",
+            email="other@example.com",
+        )
+
+        response = self.client.post(
+            reverse("auth-login"),
+            data={"email": "shared@example.com", "password": "secret123"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 409)
 
     def test_admin_can_create_employee_invite_and_send_setup_email(self):
         response = self.client.post(
@@ -755,6 +805,206 @@ class SchedulingServiceCreateTests(TestCase):
         self.assertEqual(service.status, Service.Status.COMPLETED)
         self.assertIsNotNone(service.completed_date)
 
+    def test_employee_scheduling_list_only_returns_assigned_jobs(self):
+        tech_user = User.objects.create_user(username="assigned_tech", password="secret123", email="assigned-tech@example.com")
+        tech_employee = Employee.objects.create(
+            user=tech_user,
+            full_name="Assigned Tech",
+            email="assigned-tech@example.com",
+            role=Employee.Role.TECH,
+        )
+        other_user = User.objects.create_user(username="other_assigned_tech", password="secret123", email="other-assigned-tech@example.com")
+        other_employee = Employee.objects.create(
+            user=other_user,
+            full_name="Other Assigned Tech",
+            email="other-assigned-tech@example.com",
+            role=Employee.Role.TECH,
+        )
+        visible_service = Service.objects.create(
+            memorial=self.memorial,
+            service_type=Service.ServiceType.CLEANING,
+            status=Service.Status.SCHEDULED,
+            scheduled_start=timezone.now() + timezone.timedelta(days=1),
+        )
+        hidden_service = Service.objects.create(
+            memorial=self.memorial,
+            service_type=Service.ServiceType.REPAIR,
+            status=Service.Status.IN_PROGRESS,
+            scheduled_start=timezone.now() + timezone.timedelta(days=2),
+        )
+        ServiceAssignment.objects.create(service=visible_service, employee=tech_employee)
+        ServiceAssignment.objects.create(service=hidden_service, employee=other_employee)
+
+        self.client.force_login(tech_user)
+        response = self.client.get(reverse("scheduling-service-list"))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["id"], visible_service.id)
+
+    def test_employee_scheduling_list_includes_completed_assigned_jobs(self):
+        tech_user = User.objects.create_user(username="history_tech", password="secret123", email="history-tech@example.com")
+        tech_employee = Employee.objects.create(
+            user=tech_user,
+            full_name="History Tech",
+            email="history-tech@example.com",
+            role=Employee.Role.TECH,
+        )
+        future_service = Service.objects.create(
+            memorial=self.memorial,
+            service_type=Service.ServiceType.CLEANING,
+            status=Service.Status.SCHEDULED,
+            scheduled_start=timezone.now() + timezone.timedelta(days=1),
+        )
+        past_service = Service.objects.create(
+            memorial=self.memorial,
+            service_type=Service.ServiceType.REPAIR,
+            status=Service.Status.COMPLETED,
+            completed_date=timezone.localdate(),
+        )
+        ServiceAssignment.objects.create(service=future_service, employee=tech_employee)
+        ServiceAssignment.objects.create(service=past_service, employee=tech_employee)
+
+        self.client.force_login(tech_user)
+        response = self.client.get(reverse("scheduling-service-list"))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual([item["id"] for item in payload], [future_service.id, past_service.id])
+
+    def test_employee_can_mark_assigned_service_complete(self):
+        tech_user = User.objects.create_user(username="complete_tech", password="secret123", email="complete-tech@example.com")
+        tech_employee = Employee.objects.create(
+            user=tech_user,
+            full_name="Complete Tech",
+            email="complete-tech@example.com",
+            role=Employee.Role.TECH,
+        )
+        service = Service.objects.create(
+            memorial=self.memorial,
+            service_type=Service.ServiceType.CLEANING,
+            status=Service.Status.SCHEDULED,
+            scheduled_start=timezone.now() + timezone.timedelta(days=1),
+        )
+        ServiceAssignment.objects.create(service=service, employee=tech_employee)
+
+        self.client.force_login(tech_user)
+        response = self.client.post(
+            reverse("service-complete", args=[service.id]),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        service.refresh_from_db()
+        self.assertEqual(service.status, Service.Status.COMPLETED)
+
+    def test_employee_cannot_mark_unassigned_service_complete(self):
+        tech_user = User.objects.create_user(username="blocked_tech", password="secret123", email="blocked-tech@example.com")
+        Employee.objects.create(
+            user=tech_user,
+            full_name="Blocked Tech",
+            email="blocked-tech@example.com",
+            role=Employee.Role.TECH,
+        )
+        other_user = User.objects.create_user(username="service_owner", password="secret123", email="service-owner@example.com")
+        other_employee = Employee.objects.create(
+            user=other_user,
+            full_name="Service Owner",
+            email="service-owner@example.com",
+            role=Employee.Role.TECH,
+        )
+        service = Service.objects.create(
+            memorial=self.memorial,
+            service_type=Service.ServiceType.CLEANING,
+            status=Service.Status.SCHEDULED,
+            scheduled_start=timezone.now() + timezone.timedelta(days=1),
+        )
+        ServiceAssignment.objects.create(service=service, employee=other_employee)
+
+        self.client.force_login(tech_user)
+        response = self.client.post(
+            reverse("service-complete", args=[service.id]),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        service.refresh_from_db()
+        self.assertEqual(service.status, Service.Status.SCHEDULED)
+
+    def test_employee_can_upload_photo_for_assigned_service(self):
+        tech_user = User.objects.create_user(username="photo_tech", password="secret123", email="photo-tech@example.com")
+        tech_employee = Employee.objects.create(
+            user=tech_user,
+            full_name="Photo Tech",
+            email="photo-tech@example.com",
+            role=Employee.Role.TECH,
+        )
+        service = Service.objects.create(
+            memorial=self.memorial,
+            service_type=Service.ServiceType.CLEANING,
+            status=Service.Status.IN_PROGRESS,
+        )
+        ServiceAssignment.objects.create(service=service, employee=tech_employee)
+        upload = SimpleUploadedFile(
+            "job-photo.jpg",
+            (
+                b"\x47\x49\x46\x38\x39\x61\x01\x00\x01\x00\x80\x00\x00"
+                b"\x00\x00\x00\xff\xff\xff\x21\xf9\x04\x01\x00\x00\x00\x00"
+                b"\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00\x3b"
+            ),
+            content_type="image/gif",
+        )
+
+        self.client.force_login(tech_user)
+        response = self.client.post(
+            reverse("service-photo-upload", args=[service.id]),
+            data={"image": upload, "photo_type": Photo.PhotoType.DURING, "caption": "Before polish"},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        photo = Photo.objects.get(service=service)
+        self.assertEqual(photo.caption, "Before polish")
+        self.assertIn("/media/service_photos/", photo.image_url)
+
+    def test_employee_cannot_upload_photo_for_unassigned_service(self):
+        tech_user = User.objects.create_user(username="blocked_photo_tech", password="secret123", email="blocked-photo-tech@example.com")
+        Employee.objects.create(
+            user=tech_user,
+            full_name="Blocked Photo Tech",
+            email="blocked-photo-tech@example.com",
+            role=Employee.Role.TECH,
+        )
+        other_user = User.objects.create_user(username="photo_owner", password="secret123", email="photo-owner@example.com")
+        other_employee = Employee.objects.create(
+            user=other_user,
+            full_name="Photo Owner",
+            email="photo-owner@example.com",
+            role=Employee.Role.TECH,
+        )
+        service = Service.objects.create(
+            memorial=self.memorial,
+            service_type=Service.ServiceType.CLEANING,
+            status=Service.Status.IN_PROGRESS,
+        )
+        ServiceAssignment.objects.create(service=service, employee=other_employee)
+        upload = SimpleUploadedFile(
+            "blocked-job-photo.jpg",
+            (
+                b"\x47\x49\x46\x38\x39\x61\x01\x00\x01\x00\x80\x00\x00"
+                b"\x00\x00\x00\xff\xff\xff\x21\xf9\x04\x01\x00\x00\x00\x00"
+                b"\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00\x3b"
+            ),
+            content_type="image/gif",
+        )
+
+        self.client.force_login(tech_user)
+        response = self.client.post(
+            reverse("service-photo-upload", args=[service.id]),
+            data={"image": upload, "photo_type": Photo.PhotoType.DURING},
+        )
+
+        self.assertEqual(response.status_code, 403)
     def test_create_service_rejects_partial_gps_coordinates(self):
         response = self.client.post(
             reverse("scheduling-service-create"),
@@ -783,6 +1033,30 @@ class SchedulingServiceCreateTests(TestCase):
         self.assertIn("between -90 and 90", response.json()["gps_lat"][0])
 
 
+class PhotoArchiveTests(TestCase):
+    def test_archive_lists_uploaded_photos(self):
+        customer = Customer.objects.create(full_name="Photo Customer", email="photo-customer@example.com")
+        cemetery = Cemetery.objects.create(name="Photo Cemetery")
+        plot = Plot.objects.create(cemetery=cemetery, section="A", row="1", plot_number="4")
+        memorial = Memorial.objects.create(customer=customer, plot=plot)
+        service = Service.objects.create(memorial=memorial, service_type=Service.ServiceType.CLEANING)
+        Photo.objects.create(
+            memorial=memorial,
+            service=service,
+            photo_type=Photo.PhotoType.AFTER,
+            image_url="http://testserver/media/service_photos/example.jpg",
+            caption="Finished work",
+        )
+
+        response = self.client.get(reverse("photo-archive-list"))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["caption"], "Finished work")
+        self.assertEqual(payload[0]["memorial_name"], "Photo Customer")
+
+
 class DashboardSummaryTests(TestCase):
     def test_total_revenue_uses_completed_jobs_and_projected_uses_scheduled_jobs(self):
         customer = Customer.objects.create(full_name="Revenue Customer", email="revenue@example.com")
@@ -804,3 +1078,60 @@ class DashboardSummaryTests(TestCase):
         summary = response.json()["summary"]
         self.assertEqual(summary["total_revenue"], 100.0)
         self.assertEqual(summary["projected_revenue"], 75.0)
+
+    def test_employee_dashboard_only_returns_assigned_services(self):
+        user = User.objects.create_user(username="tech_dashboard", password="secret123", email="techdash@example.com")
+        employee = Employee.objects.create(
+            user=user,
+            full_name="Taylor Tech",
+            email="techdash@example.com",
+            role=Employee.Role.TECH,
+        )
+        other_user = User.objects.create_user(username="other_tech", password="secret123", email="othertech@example.com")
+        other_employee = Employee.objects.create(
+            user=other_user,
+            full_name="Other Tech",
+            email="othertech@example.com",
+            role=Employee.Role.TECH,
+        )
+
+        customer = Customer.objects.create(full_name="Assigned Customer", email="assigned@example.com")
+        cemetery = Cemetery.objects.create(name="Assigned Cemetery")
+        plot = Plot.objects.create(cemetery=cemetery, section="B", row="2", plot_number="7")
+        memorial = Memorial.objects.create(customer=customer, plot=plot)
+
+        assigned_service = Service.objects.create(
+            memorial=memorial,
+            status=Service.Status.SCHEDULED,
+            scheduled_start=timezone.now() + timezone.timedelta(days=1),
+        )
+        completed_service = Service.objects.create(
+            memorial=memorial,
+            status=Service.Status.COMPLETED,
+            completed_date=timezone.localdate(),
+        )
+        other_service = Service.objects.create(
+            memorial=memorial,
+            status=Service.Status.SCHEDULED,
+            scheduled_start=timezone.now() + timezone.timedelta(days=2),
+        )
+
+        ServiceAssignment.objects.create(service=assigned_service, employee=employee)
+        ServiceAssignment.objects.create(service=completed_service, employee=employee)
+        ServiceAssignment.objects.create(service=other_service, employee=other_employee)
+        Invoice.objects.create(customer=customer, service=completed_service, total_amount="80.00")
+        Invoice.objects.create(customer=customer, service=other_service, total_amount="90.00")
+
+        self.client.force_login(user)
+        response = self.client.get(reverse("dashboard-summary"))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["summary"]["active_services"], 1)
+        self.assertEqual(payload["summary"]["services_today"], 0)
+        self.assertEqual(payload["summary"]["total_revenue"], 80.0)
+        self.assertEqual(payload["summary"]["projected_revenue"], 0.0)
+        self.assertEqual(len(payload["upcoming_services"]), 1)
+        self.assertEqual(payload["upcoming_services"][0]["id"], assigned_service.id)
+        self.assertEqual(len(payload["recent_completed"]), 1)
+        self.assertEqual(payload["recent_completed"][0]["id"], completed_service.id)

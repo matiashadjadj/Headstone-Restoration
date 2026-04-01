@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework import serializers
 from rest_framework.permissions import AllowAny
-from rest_framework.authentication import BasicAuthentication
+from rest_framework.authentication import BasicAuthentication, SessionAuthentication
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from django.utils import timezone
 from django.db import models, transaction
@@ -18,10 +18,11 @@ from django.contrib.auth import login, logout
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.files.storage import default_storage
 
 from communications.exceptions import EmailDeliveryError
 from communications.services import resolve_from_email, send_email
-from core.models import Service, ServiceOption, Employee, EmployeeInvite, UserProfile, ServiceAssignment, Invoice, Memorial, Customer, Cemetery, Payment
+from core.models import Service, ServiceOption, Employee, EmployeeInvite, UserProfile, ServiceAssignment, Invoice, Memorial, Customer, Cemetery, Payment, Photo
 from payments import stripe_client
 from core.api.serializers import (
     AssignTechnicianSerializer,
@@ -35,6 +36,8 @@ from core.api.serializers import (
     CreateSchedulingServiceSerializer,
     ServiceOptionSerializer,
     ServiceOptionUpsertSerializer,
+    PhotoArchiveSerializer,
+    PhotoUploadSerializer,
     SendCustomerEmailSerializer,
     CustomerUpsertSerializer,
     EmployeeRoleSerializer,
@@ -306,10 +309,12 @@ class AuthLoginView(APIView):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        email = serializer.validated_data["email"].strip().lower()
+        identifier = serializer.validated_data["email"].strip()
         password = serializer.validated_data["password"]
 
-        candidates = User.objects.filter(email__iexact=email)
+        candidates = User.objects.filter(
+            Q(username__iexact=identifier) | Q(email__iexact=identifier)
+        ).distinct()
         matches = []
 
         for candidate in candidates:
@@ -319,11 +324,11 @@ class AuthLoginView(APIView):
                     matches.append((candidate, session_user))
 
         if not matches:
-            return Response({"detail": "Invalid email or password."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "Invalid username/email or password."}, status=status.HTTP_400_BAD_REQUEST)
 
         if len(matches) > 1:
             return Response(
-                {"detail": "Multiple accounts match this email. Use a unique email for each login."},
+                {"detail": "Multiple accounts match this login. Use a unique username or email for each account."},
                 status=status.HTTP_409_CONFLICT,
             )
 
@@ -535,14 +540,34 @@ class SchedulingServiceListView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        services = (
-            scheduling_services_queryset()
-            .filter(status__in=[Service.Status.DRAFT, Service.Status.SCHEDULED, Service.Status.IN_PROGRESS])
-            .order_by(
-                models.F("scheduled_start").asc(nulls_last=True),
-                "-created_at",
+        employee = getattr(request.user, "employee", None) if getattr(request.user, "is_authenticated", False) else None
+        services = scheduling_services_queryset()
+        if employee and employee.role not in {Employee.Role.ADMIN, Employee.Role.FRONT_DESK}:
+            services = (
+                services
+                .filter(assignments__employee=employee)
+                .filter(status__in=[Service.Status.DRAFT, Service.Status.SCHEDULED, Service.Status.IN_PROGRESS, Service.Status.COMPLETED])
+                .distinct()
+                .order_by(
+                    models.Case(
+                        models.When(status=Service.Status.COMPLETED, then=1),
+                        default=0,
+                        output_field=models.IntegerField(),
+                    ),
+                    models.F("scheduled_start").asc(nulls_last=True),
+                    models.F("completed_date").desc(nulls_last=True),
+                    "-created_at",
+                )
             )
-        )
+        else:
+            services = (
+                services
+                .filter(status__in=[Service.Status.DRAFT, Service.Status.SCHEDULED, Service.Status.IN_PROGRESS])
+                .order_by(
+                    models.F("scheduled_start").asc(nulls_last=True),
+                    "-created_at",
+                )
+            )
         return Response(SchedulingServiceSerializer(services, many=True).data)
 
 
@@ -594,16 +619,20 @@ class SchedulingServiceCreateView(APIView):
 @method_decorator(csrf_exempt, name="dispatch")
 class CompleteServiceView(APIView):
     permission_classes = [AllowAny]
-    authentication_classes = [BasicAuthentication]
+    authentication_classes = [SessionAuthentication, BasicAuthentication]
 
     def post(self, request, service_id):
         service = get_object_or_404(Service, id=service_id)
+        employee = getattr(request.user, "employee", None) if getattr(request.user, "is_authenticated", False) else None
+        if employee and employee.role not in {Employee.Role.ADMIN, Employee.Role.FRONT_DESK}:
+            assigned = ServiceAssignment.objects.filter(service=service, employee=employee).exists()
+            if not assigned:
+                return Response({"detail": "You can only complete services assigned to you."}, status=status.HTTP_403_FORBIDDEN)
         old_status = service.status
         service.status = Service.Status.COMPLETED
         service.completed_date = timezone.localdate()
         service.save(update_fields=["status", "completed_date", "updated_at"])
 
-        employee = getattr(request.user, "employee", None) if getattr(request.user, "is_authenticated", False) else None
         if old_status != Service.Status.COMPLETED:
             service.status_history.create(
                 old_status=old_status,
@@ -618,6 +647,54 @@ class CompleteServiceView(APIView):
             or service
         ).data
         return Response({"ok": True, "service": payload}, status=status.HTTP_200_OK)
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class ServicePhotoUploadView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [SessionAuthentication, BasicAuthentication]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, service_id):
+        service = get_object_or_404(
+            Service.objects.select_related("memorial__customer", "memorial__plot__cemetery"),
+            id=service_id,
+        )
+        employee = getattr(request.user, "employee", None) if getattr(request.user, "is_authenticated", False) else None
+        if employee and employee.role not in {Employee.Role.ADMIN, Employee.Role.FRONT_DESK}:
+            assigned = ServiceAssignment.objects.filter(service=service, employee=employee).exists()
+            if not assigned:
+                return Response({"detail": "You can only upload photos for services assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = PhotoUploadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        image = serializer.validated_data["image"]
+        photo_type = serializer.validated_data["photo_type"]
+        caption = serializer.validated_data.get("caption", "")
+        upload_path = default_storage.save(f"service_photos/{service.id}/{image.name}", image)
+        image_url = request.build_absolute_uri(default_storage.url(upload_path))
+        photo = Photo.objects.create(
+            memorial=service.memorial,
+            service=service,
+            photo_type=photo_type,
+            image_url=image_url,
+            caption=caption,
+        )
+
+        return Response({"ok": True, "photo": PhotoArchiveSerializer(photo).data}, status=status.HTTP_201_CREATED)
+
+
+class PhotoArchiveListView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [SessionAuthentication, BasicAuthentication]
+
+    def get(self, request):
+        photos = (
+            Photo.objects.select_related("memorial__customer", "memorial__plot__cemetery", "service")
+            .order_by("-created_at")
+        )
+        return Response(PhotoArchiveSerializer(photos, many=True).data)
 
 
 class ServiceOptionListCreateView(APIView):
@@ -1198,6 +1275,7 @@ class DashboardSummaryView(APIView):
     def get(self, request):
         now = timezone.now()
         today = now.date()
+        employee = getattr(request.user, "employee", None) if getattr(request.user, "is_authenticated", False) else None
 
         base_qs = (
             Service.objects.select_related(
@@ -1205,6 +1283,9 @@ class DashboardSummaryView(APIView):
                 "memorial__plot__cemetery",
             )
         )
+
+        if employee and employee.role not in {Employee.Role.ADMIN, Employee.Role.FRONT_DESK}:
+            base_qs = base_qs.filter(assignments__employee=employee).distinct()
 
         active_qs = base_qs.filter(
             status__in=[Service.Status.SCHEDULED, Service.Status.IN_PROGRESS]
@@ -1231,11 +1312,14 @@ class DashboardSummaryView(APIView):
         )
 
         total_revenue = (
-            Invoice.objects.filter(service__status=Service.Status.COMPLETED)
+            Invoice.objects.filter(service__in=base_qs, service__status=Service.Status.COMPLETED)
             .aggregate(total=Sum("total_amount"))["total"] or 0
         )
         projected_revenue = (
-            Invoice.objects.filter(service__status__in=[Service.Status.SCHEDULED, Service.Status.IN_PROGRESS])
+            Invoice.objects.filter(
+                service__in=base_qs,
+                service__status__in=[Service.Status.SCHEDULED, Service.Status.IN_PROGRESS],
+            )
             .aggregate(total=Sum("total_amount"))["total"] or 0
         )
 
