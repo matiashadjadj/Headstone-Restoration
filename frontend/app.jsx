@@ -7,6 +7,7 @@ const ROLE_CONFIGS = {
     defaultRoute: 'dashboard',
     nav: [
       { id: 'dashboard', label: 'Dashboard', to: '/admin/dashboard' },
+      { id: 'onboarding', label: 'Onboard Customer', to: '/admin/onboarding' },
       { id: 'memorials', label: 'Memorials', to: '/admin/memorials' },
       { id: 'scheduling', label: 'Scheduling', to: '/admin/scheduling' },
       { id: 'users', label: 'Users & Roles', to: '/admin/users' },
@@ -25,7 +26,7 @@ const ROLE_CONFIGS = {
     defaultRoute: 'dashboard',
     nav: [
       { id: 'dashboard', label: 'Front Desk', to: '/frontdesk/dashboard' },
-      { id: 'onboarding', label: 'New Intake', to: '/frontdesk/onboarding' },
+      { id: 'onboarding', label: 'Onboard Customer', to: '/frontdesk/onboarding' },
       { id: 'customers', label: 'Customers', to: '/frontdesk/customers' },
       { id: 'memorials', label: 'Memorials', to: '/frontdesk/memorials' },
       { id: 'scheduling', label: 'Scheduling', to: '/frontdesk/scheduling' },
@@ -388,6 +389,371 @@ function useDashboardData(enabled) {
     upcoming: data.upcoming_services,
     recent: data.recent_completed || []
   };
+}
+
+const WORKFLOW_STORE_KEY = 'hs_frontend_workflow_store_v1';
+const ONBOARDING_DRAFT_KEY = 'hs_frontend_onboarding_draft_v1';
+
+const MATERIAL_OPTIONS = [
+  { value: 'granite', label: 'Granite' },
+  { value: 'marble', label: 'Marble' },
+  { value: 'limestone', label: 'Limestone' },
+  { value: 'sandstone', label: 'Sandstone' },
+  { value: 'bronze', label: 'Bronze' },
+  { value: 'other', label: 'Other / TBD' }
+];
+
+function createEmptyWorkflowStore() {
+  return {
+    customerMeta: {},
+    cemeteryMeta: {},
+    memorialMeta: {},
+    localCemeteries: [],
+    localMemorials: []
+  };
+}
+
+function readJsonStorage(key, fallbackValue) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallbackValue;
+    return JSON.parse(raw);
+  } catch (err) {
+    return fallbackValue;
+  }
+}
+
+function writeJsonStorage(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (err) {
+    // ignore storage errors
+  }
+  return value;
+}
+
+function readWorkflowStore() {
+  const fallback = createEmptyWorkflowStore();
+  const parsed = readJsonStorage(WORKFLOW_STORE_KEY, fallback);
+  return {
+    ...fallback,
+    ...(parsed || {}),
+    customerMeta: { ...(parsed?.customerMeta || {}) },
+    cemeteryMeta: { ...(parsed?.cemeteryMeta || {}) },
+    memorialMeta: { ...(parsed?.memorialMeta || {}) },
+    localCemeteries: Array.isArray(parsed?.localCemeteries) ? parsed.localCemeteries : [],
+    localMemorials: Array.isArray(parsed?.localMemorials) ? parsed.localMemorials : []
+  };
+}
+
+function updateWorkflowStore(updater) {
+  const current = readWorkflowStore();
+  const next = typeof updater === 'function' ? updater(current) : updater;
+  writeJsonStorage(WORKFLOW_STORE_KEY, next);
+  window.dispatchEvent(new Event('hs:workflow-updated'));
+  return next;
+}
+
+function saveCustomerMeta(customerId, fields) {
+  const key = String(customerId);
+  updateWorkflowStore((store) => ({
+    ...store,
+    customerMeta: {
+      ...store.customerMeta,
+      [key]: {
+        ...(store.customerMeta[key] || {}),
+        ...(fields || {})
+      }
+    }
+  }));
+}
+
+function saveCemeteryMeta(cemeteryId, fields) {
+  const key = String(cemeteryId);
+  updateWorkflowStore((store) => ({
+    ...store,
+    cemeteryMeta: {
+      ...store.cemeteryMeta,
+      [key]: {
+        ...(store.cemeteryMeta[key] || {}),
+        ...(fields || {})
+      }
+    }
+  }));
+}
+
+function saveMemorialMeta(memorialId, fields) {
+  const key = String(memorialId);
+  updateWorkflowStore((store) => ({
+    ...store,
+    memorialMeta: {
+      ...store.memorialMeta,
+      [key]: {
+        ...(store.memorialMeta[key] || {}),
+        ...(fields || {})
+      }
+    }
+  }));
+}
+
+function upsertLocalCemetery(record) {
+  updateWorkflowStore((store) => {
+    const nextRows = [...store.localCemeteries];
+    const index = nextRows.findIndex((row) => String(row.id) === String(record.id));
+    if (index >= 0) {
+      nextRows[index] = { ...nextRows[index], ...record };
+    } else {
+      nextRows.push(record);
+    }
+    return {
+      ...store,
+      localCemeteries: nextRows
+    };
+  });
+}
+
+function upsertLocalMemorial(record) {
+  updateWorkflowStore((store) => {
+    const nextRows = [...store.localMemorials];
+    const index = nextRows.findIndex((row) => String(row.id) === String(record.id));
+    if (index >= 0) {
+      nextRows[index] = { ...nextRows[index], ...record };
+    } else {
+      nextRows.push(record);
+    }
+    return {
+      ...store,
+      localMemorials: nextRows
+    };
+  });
+}
+
+function useWorkflowStore() {
+  const [store, setStore] = useState(readWorkflowStore);
+
+  useEffect(() => {
+    function handleUpdate() {
+      setStore(readWorkflowStore());
+    }
+
+    window.addEventListener('hs:workflow-updated', handleUpdate);
+    return () => window.removeEventListener('hs:workflow-updated', handleUpdate);
+  }, []);
+
+  return store;
+}
+
+function readOnboardingDraft() {
+  const draft = readJsonStorage(ONBOARDING_DRAFT_KEY, {});
+  return draft && typeof draft === 'object' ? draft : {};
+}
+
+function saveOnboardingDraft(draft) {
+  writeJsonStorage(ONBOARDING_DRAFT_KEY, draft || {});
+}
+
+function clearOnboardingDraft() {
+  try {
+    localStorage.removeItem(ONBOARDING_DRAFT_KEY);
+  } catch (err) {
+    // ignore storage errors
+  }
+}
+
+function makeLocalId(prefix) {
+  return `local-${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeLookup(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function matchesCustomerRecord(memorial, customer) {
+  if (!memorial || !customer) return false;
+  if (memorial.customer_id != null && customer.id != null) {
+    return String(memorial.customer_id) === String(customer.id);
+  }
+  return normalizeLookup(memorial.customer) === normalizeLookup(customer.full_name);
+}
+
+function matchesCemeteryRecord(memorial, cemetery) {
+  if (!memorial || !cemetery) return false;
+  if (memorial.cemetery_id != null && cemetery.id != null) {
+    return String(memorial.cemetery_id) === String(cemetery.id);
+  }
+  return normalizeLookup(memorial.cemetery) === normalizeLookup(cemetery.name);
+}
+
+function getMaterialLabel(value) {
+  const match = MATERIAL_OPTIONS.find((option) => option.value === value);
+  return match ? match.label : 'Other / TBD';
+}
+
+function buildMergedMemorials(apiMemorials, workflowStore) {
+  const store = workflowStore || createEmptyWorkflowStore();
+  const apiRows = (Array.isArray(apiMemorials) ? apiMemorials : []).map((row) => {
+    const meta = store.memorialMeta[String(row.id)] || {};
+    const material = meta.material || 'other';
+    const photoNames = Array.isArray(meta.photo_names) ? meta.photo_names : [];
+    return {
+      ...row,
+      source: 'api',
+      customer_id: meta.customer_id ?? null,
+      cemetery_id: meta.cemetery_id ?? null,
+      name_on_stone: meta.name_on_stone || row.customer || '',
+      material,
+      material_label: getMaterialLabel(material),
+      stone_style: meta.stone_style || '',
+      has_plaque: Boolean(meta.has_plaque),
+      has_paint: Boolean(meta.has_paint),
+      decoration_notes: meta.decoration_notes || '',
+      location_description: meta.location_description || '',
+      age_years: meta.age_years || '',
+      previous_cleaning_notes: meta.previous_cleaning_notes || '',
+      notes: meta.notes || '',
+      photo_names: photoNames,
+      regional_team: meta.regional_team || (row.last_service_date ? 'Regional field team' : 'Scheduling team')
+    };
+  });
+
+  const localRows = (Array.isArray(store.localMemorials) ? store.localMemorials : []).map((row) => {
+    const material = row.material || 'other';
+    return {
+      ...row,
+      source: 'local',
+      material,
+      material_label: getMaterialLabel(material),
+      photo_names: Array.isArray(row.photo_names) ? row.photo_names : [],
+      regional_team: row.regional_team || 'Regional field team'
+    };
+  });
+
+  return [...apiRows, ...localRows].sort((a, b) => {
+    const customerCompare = String(a.customer || '').localeCompare(String(b.customer || ''));
+    if (customerCompare !== 0) return customerCompare;
+    return String(a.name_on_stone || a.customer || '').localeCompare(String(b.name_on_stone || b.customer || ''));
+  });
+}
+
+function buildMergedCustomers(apiCustomers, mergedMemorials, workflowStore) {
+  const store = workflowStore || createEmptyWorkflowStore();
+  return (Array.isArray(apiCustomers) ? apiCustomers : [])
+    .map((customer) => {
+      const meta = store.customerMeta[String(customer.id)] || {};
+      const memorialsCount = mergedMemorials.filter((memorial) => matchesCustomerRecord(memorial, customer)).length;
+      return {
+        ...customer,
+        ...meta,
+        memorials_count: memorialsCount || customer.memorials_count || 0
+      };
+    })
+    .sort((a, b) => String(a.full_name || '').localeCompare(String(b.full_name || '')));
+}
+
+function buildMergedCemeteries(apiCemeteries, mergedMemorials, workflowStore) {
+  const store = workflowStore || createEmptyWorkflowStore();
+  const apiRows = (Array.isArray(apiCemeteries) ? apiCemeteries : []).map((cemetery) => {
+    const meta = store.cemeteryMeta[String(cemetery.id)] || {};
+    const memorialsCount = mergedMemorials.filter((memorial) => matchesCemeteryRecord(memorial, { ...cemetery, ...meta })).length;
+    return {
+      ...cemetery,
+      ...meta,
+      source: 'api',
+      memorials_count: memorialsCount || cemetery.memorials_count || 0
+    };
+  });
+
+  const localRows = (Array.isArray(store.localCemeteries) ? store.localCemeteries : []).map((cemetery) => {
+    const memorialsCount = mergedMemorials.filter((memorial) => matchesCemeteryRecord(memorial, cemetery)).length;
+    return {
+      ...cemetery,
+      source: 'local',
+      active_services: cemetery.active_services || 0,
+      memorials_count: memorialsCount
+    };
+  });
+
+  return [...apiRows, ...localRows].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+}
+
+function buildRevenueChartRows(recentCompleted, scheduledServices) {
+  const now = new Date();
+  const buckets = [];
+
+  for (let offset = 5; offset >= 0; offset -= 1) {
+    const dt = new Date(now.getFullYear(), now.getMonth() - offset, 1);
+    buckets.push({
+      key: `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`,
+      label: dt.toLocaleDateString('en-US', { month: 'short' }),
+      collected: 0,
+      scheduled: 0
+    });
+  }
+
+  const indexByKey = Object.fromEntries(buckets.map((bucket) => [bucket.key, bucket]));
+
+  (Array.isArray(recentCompleted) ? recentCompleted : []).forEach((row) => {
+    const dt = new Date(row.completed_date);
+    if (Number.isNaN(dt.getTime())) return;
+    const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+    if (!indexByKey[key]) return;
+    indexByKey[key].collected += Number(row.amount || 0);
+  });
+
+  (Array.isArray(scheduledServices) ? scheduledServices : []).forEach((row) => {
+    const dt = new Date(row.scheduled_start);
+    if (Number.isNaN(dt.getTime())) return;
+    const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+    if (!indexByKey[key]) return;
+    indexByKey[key].scheduled += Number(row.price || 0);
+  });
+
+  return buckets;
+}
+
+function getOnboardingPathForCurrentRole() {
+  const normalized = normalizePath(window.location.hash || '');
+  const segments = normalized.replace(/^\/+/, '').split('/').filter(Boolean);
+  const role = ROLE_CONFIGS[segments[0]] ? segments[0] : 'frontdesk';
+  return `${ROLE_CONFIGS[role].basePath}/onboarding`;
+}
+
+function openOnboardingWorkflow(draft = {}) {
+  saveOnboardingDraft(draft);
+  window.location.hash = getOnboardingPathForCurrentRole();
+}
+
+function RevenueSnapshotChart({ rows }) {
+  const data = Array.isArray(rows) ? rows : [];
+  const maxValue = data.reduce((max, row) => Math.max(max, row.collected || 0, row.scheduled || 0), 0);
+
+  if (!data.length || maxValue <= 0) {
+    return <div className="chart-placeholder">Revenue graph will fill in as completed and scheduled jobs accumulate.</div>;
+  }
+
+  return (
+    <div className="revenue-chart">
+      {data.map((row) => (
+        <div key={row.key} className="revenue-row">
+          <span className="revenue-month">{row.label}</span>
+          <div className="revenue-bars">
+            <div
+              className="revenue-bar collected"
+              style={{ width: `${Math.max(12, (row.collected / maxValue) * 100)}%` }}
+            >
+              {row.collected > 0 ? `Collected ${formatCurrency(row.collected)}` : 'Collected'}
+            </div>
+            <div
+              className="revenue-bar scheduled"
+              style={{ width: `${Math.max(12, (row.scheduled / maxValue) * 100)}%` }}
+            >
+              {row.scheduled > 0 ? `Scheduled ${formatCurrency(row.scheduled)}` : 'Scheduled'}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 const ROUTES = {
@@ -4164,6 +4530,1348 @@ function UserSettingsPage({ sessionUser, onSessionUserUpdate, hideHeader = false
     </>
   );
 }
+
+function createCustomerFormState(overrides = {}) {
+  return {
+    full_name: '',
+    email: '',
+    phone: '',
+    how_heard_about_us: '',
+    address_line1: '',
+    address_line2: '',
+    city: '',
+    state: '',
+    postal_code: '',
+    notes: '',
+    ...overrides
+  };
+}
+
+function createCemeteryFormState(overrides = {}) {
+  return {
+    id: '',
+    name: '',
+    address: '',
+    city: '',
+    state: '',
+    contact_name: '',
+    contact_phone: '',
+    contact_email: '',
+    notes: '',
+    ...overrides
+  };
+}
+
+function createMemorialFormState(overrides = {}) {
+  return {
+    id: '',
+    customer_id: '',
+    customer: '',
+    cemetery_id: '',
+    cemetery: '',
+    name_on_stone: '',
+    material: 'other',
+    stone_style: '',
+    has_plaque: false,
+    has_paint: false,
+    decoration_notes: '',
+    location_description: '',
+    age_years: '',
+    previous_cleaning_notes: '',
+    notes: '',
+    photo_names: [],
+    regional_team: '',
+    last_service_date: '',
+    ...overrides
+  };
+}
+
+function handleDraftFieldChange(setter, event) {
+  const { name, value, type, checked } = event.target;
+  setter((prev) => ({
+    ...prev,
+    [name]: type === 'checkbox' ? checked : value
+  }));
+}
+
+function CustomerFormFields({ form, onChange }) {
+  return (
+    <>
+      <label>Full Name</label>
+      <input name="full_name" value={form.full_name} onChange={onChange} required />
+
+      <div className="field-row">
+        <div>
+          <label>Email</label>
+          <input type="email" name="email" value={form.email} onChange={onChange} />
+        </div>
+        <div>
+          <label>Phone</label>
+          <input name="phone" value={form.phone} onChange={onChange} />
+        </div>
+      </div>
+
+      <label>How They Heard About Us</label>
+      <input
+        name="how_heard_about_us"
+        value={form.how_heard_about_us}
+        onChange={onChange}
+        placeholder="Referral, cemetery office, search, repeat customer..."
+      />
+
+      <label>Address Line 1</label>
+      <input name="address_line1" value={form.address_line1} onChange={onChange} />
+
+      <label>Address Line 2</label>
+      <input name="address_line2" value={form.address_line2} onChange={onChange} />
+
+      <div className="grid-3">
+        <div>
+          <label>City</label>
+          <input name="city" value={form.city} onChange={onChange} />
+        </div>
+        <div>
+          <label>State</label>
+          <input name="state" value={form.state} onChange={onChange} />
+        </div>
+        <div>
+          <label>Postal Code</label>
+          <input name="postal_code" value={form.postal_code} onChange={onChange} />
+        </div>
+      </div>
+
+      <label>Notes</label>
+      <textarea name="notes" value={form.notes} onChange={onChange} rows={4} />
+    </>
+  );
+}
+
+function CemeteryFormFields({ form, onChange }) {
+  return (
+    <>
+      <label>Cemetery Name</label>
+      <input name="name" value={form.name} onChange={onChange} required />
+
+      <label>Address</label>
+      <input name="address" value={form.address} onChange={onChange} />
+
+      <div className="grid-3">
+        <div>
+          <label>City</label>
+          <input name="city" value={form.city} onChange={onChange} />
+        </div>
+        <div>
+          <label>State</label>
+          <input name="state" value={form.state} onChange={onChange} />
+        </div>
+        <div>
+          <label>Contact</label>
+          <input name="contact_name" value={form.contact_name} onChange={onChange} />
+        </div>
+      </div>
+
+      <div className="field-row">
+        <div>
+          <label>Contact Phone</label>
+          <input name="contact_phone" value={form.contact_phone} onChange={onChange} />
+        </div>
+        <div>
+          <label>Contact Email</label>
+          <input type="email" name="contact_email" value={form.contact_email} onChange={onChange} />
+        </div>
+      </div>
+
+      <label>Notes</label>
+      <textarea name="notes" value={form.notes} onChange={onChange} rows={4} />
+    </>
+  );
+}
+
+function MemorialFormFields({ form, onChange, onPhotoNamesChange }) {
+  return (
+    <>
+      <label>Name On Stone</label>
+      <input
+        name="name_on_stone"
+        value={form.name_on_stone}
+        onChange={onChange}
+        placeholder="John H. Andrews Bench"
+      />
+
+      <div className="field-row">
+        <div>
+          <label>Stone Type</label>
+          <select name="material" value={form.material} onChange={onChange}>
+            {MATERIAL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label>Style</label>
+          <input
+            name="stone_style"
+            value={form.stone_style}
+            onChange={onChange}
+            placeholder="Flat, slab, upright..."
+          />
+        </div>
+      </div>
+
+      <div className="field-row checkbox-row">
+        <label className="checkbox-card">
+          <input type="checkbox" name="has_plaque" checked={Boolean(form.has_plaque)} onChange={onChange} />
+          <span>Has plaque</span>
+        </label>
+        <label className="checkbox-card">
+          <input type="checkbox" name="has_paint" checked={Boolean(form.has_paint)} onChange={onChange} />
+          <span>Has paint</span>
+        </label>
+      </div>
+
+      <div className="field-row">
+        <div>
+          <label>Stone Location</label>
+          <input
+            name="location_description"
+            value={form.location_description}
+            onChange={onChange}
+            placeholder="Section, row, landmarks..."
+          />
+        </div>
+        <div>
+          <label>Approximate Age</label>
+          <input
+            type="number"
+            min="0"
+            name="age_years"
+            value={form.age_years}
+            onChange={onChange}
+            placeholder="Years"
+          />
+        </div>
+      </div>
+
+      <label>Vases / Flowers / Decorations</label>
+      <textarea name="decoration_notes" value={form.decoration_notes} onChange={onChange} rows={3} />
+
+      <label>Previous Cleans / Restoration Notes</label>
+      <textarea
+        name="previous_cleaning_notes"
+        value={form.previous_cleaning_notes}
+        onChange={onChange}
+        rows={3}
+      />
+
+      <label>Additional Notes</label>
+      <textarea name="notes" value={form.notes} onChange={onChange} rows={4} />
+
+      <label>Reference Photos</label>
+      <input
+        type="file"
+        multiple
+        onChange={(event) => {
+          const names = Array.from(event.target.files || []).map((file) => file.name);
+          onPhotoNamesChange(names);
+        }}
+      />
+      {form.photo_names.length > 0 && (
+        <div className="detail-pill-row">
+          {form.photo_names.map((name) => (
+            <span key={name} className="detail-pill">{name}</span>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function DashboardPageModern() {
+  const { loading, error, summary, upcoming, recent } = useDashboardData(true);
+  const servicesState = useApi('/scheduling/services/', [], true, { refreshEvent: 'hs:schedule-updated' });
+  const workflowStore = useWorkflowStore();
+  const revenueRows = useMemo(
+    () => buildRevenueChartRows(recent, servicesState.data || []),
+    [recent, servicesState.data]
+  );
+
+  const stats = [
+    {
+      label: 'Total Revenue',
+      value: summary ? formatCurrency(summary.total_revenue || 0) : '-',
+      sub: summary ? 'Completed work already collected' : 'Awaiting data'
+    },
+    {
+      label: 'Projected Revenue',
+      value: summary ? formatCurrency(summary.projected_revenue || 0) : '-',
+      sub: summary ? 'Scheduled work still in the pipeline' : 'Awaiting data'
+    },
+    {
+      label: 'Active Services',
+      value: summary?.active_services ?? '-',
+      sub: summary ? `${summary.services_today} on the calendar today` : 'Awaiting data'
+    },
+    {
+      label: 'Onboarding Queue',
+      value: workflowStore.localMemorials.length,
+      sub: workflowStore.localMemorials.length ? 'Memorial intake records saved in the UI' : 'No local memorial intake drafts'
+    }
+  ];
+
+  return (
+    <>
+      <div className="page-heading page-heading-actions">
+        <div>
+          <h1 className="page-title">Dashboard</h1>
+          <p className="page-subtitle">Overview of restoration activity, revenue, onboarding, and service timing.</p>
+        </div>
+        <button className="primary-btn" type="button" onClick={() => openOnboardingWorkflow()}>
+          Onboard Customer
+        </button>
+      </div>
+
+      {(error || servicesState.error) && (
+        <div className="card warn">Backend error: {error || servicesState.error}</div>
+      )}
+
+      <section className="kpis">
+        {stats.map((stat) => (
+          <div key={stat.label} className="kpi">
+            <span className="kpi-label">{stat.label}</span>
+            <strong>{stat.value}</strong>
+            <small className={stat.label.includes('Revenue') ? 'positive' : ''}>{stat.sub}</small>
+          </div>
+        ))}
+      </section>
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <h3>Upcoming Services</h3>
+            <button className="ghost-btn" type="button" onClick={() => { window.location.hash = getSchedulingPathForCurrentRole(); }}>
+              View Calendar
+            </button>
+          </div>
+          {loading && <p className="meta">Loading from backend...</p>}
+          {!loading && upcoming.length === 0 && <p className="meta">No upcoming services scheduled.</p>}
+          {!loading && upcoming.length > 0 && (
+            <ul className="service-list">
+              {upcoming.map((svc) => (
+                <li key={svc.id}>
+                  <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
+                  <span>{svc.cemetery_name || 'Scheduled location'}</span>
+                  <div className="meta">Service date: {formatDateTimeShort(svc.scheduled_start)}</div>
+                  <div className="meta">{svc.status_display || svc.status || 'Scheduled'}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h3>Monthly Revenue</h3>
+            <span className="meta">Collected vs scheduled snapshot</span>
+          </div>
+          <RevenueSnapshotChart rows={revenueRows} />
+        </div>
+      </section>
+
+      <section className="grid-2">
+        <div className="card">
+          <h3>Recently Completed</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Memorial</th>
+                <th>Cemetery</th>
+                <th>Date</th>
+                <th>Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && <tr><td colSpan="4" className="meta">Loading...</td></tr>}
+              {!loading && recent.length === 0 && <tr><td colSpan="4" className="meta">No completed services yet.</td></tr>}
+              {!loading && recent.map((svc) => (
+                <tr key={svc.id}>
+                  <td>{svc.memorial_name}</td>
+                  <td>{svc.cemetery_name || '-'}</td>
+                  <td>{formatDateOnly(svc.completed_date)}</td>
+                  <td>{svc.amount != null ? formatCurrency(Number(svc.amount)) : '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h3>Customer Journey</h3>
+            <button className="ghost-btn" type="button" onClick={() => openOnboardingWorkflow()}>
+              Open Intake
+            </button>
+          </div>
+          <p className="meta">Use onboarding to create a customer, attach a stone, and keep repeat memorial work nested under the same account.</p>
+          <div className="compact-stack">
+            <div className="queue-row">
+              <strong>{workflowStore.localMemorials.length}</strong>
+              <span>Memorial records added from the frontend workflow and ready for review.</span>
+            </div>
+            <div className="queue-row">
+              <strong>{summary?.services_today ?? 0}</strong>
+              <span>Service visits are already planned for today.</span>
+            </div>
+            <div className="queue-row">
+              <strong>{upcoming.length}</strong>
+              <span>Upcoming visits now show the service date directly on the dashboard.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function FrontDeskDashboardPageModern() {
+  const { loading, error, summary, upcoming, recent } = useDashboardData(true);
+  const customerState = useApi('/manage/customers/', [], true, { refreshEvent: 'hs:customers-updated' });
+  const memorialState = useApi('/memorials/', []);
+  const cemeteryState = useApi('/cemeteries/', []);
+  const servicesState = useApi('/scheduling/services/', [], true, { refreshEvent: 'hs:schedule-updated' });
+  const workflowStore = useWorkflowStore();
+  const memorials = useMemo(
+    () => buildMergedMemorials(memorialState.data || [], workflowStore),
+    [memorialState.data, workflowStore]
+  );
+  const customers = useMemo(
+    () => buildMergedCustomers(customerState.data || [], memorials, workflowStore),
+    [customerState.data, memorials, workflowStore]
+  );
+  const cemeteries = useMemo(
+    () => buildMergedCemeteries(cemeteryState.data || [], memorials, workflowStore),
+    [cemeteryState.data, memorials, workflowStore]
+  );
+  const revenueRows = useMemo(
+    () => buildRevenueChartRows(recent, servicesState.data || []),
+    [recent, servicesState.data]
+  );
+  const unscheduledServices = (servicesState.data || []).filter((service) => !service.scheduled_start || service.status === 'draft');
+
+  return (
+    <>
+      <div className="page-heading page-heading-actions">
+        <div>
+          <h1 className="page-title">Front Desk Dashboard</h1>
+          <p className="page-subtitle">Daily control center for onboarding, scheduling, customer follow-up, and cemetery visibility.</p>
+        </div>
+        <button className="primary-btn" type="button" onClick={() => openOnboardingWorkflow()}>
+          Onboard Customer
+        </button>
+      </div>
+
+      {(error || customerState.error || memorialState.error || cemeteryState.error || servicesState.error) && (
+        <div className="card warn">
+          Backend error: {error || customerState.error || memorialState.error || cemeteryState.error || servicesState.error}
+        </div>
+      )}
+
+      <section className="kpis">
+        <div className="kpi">
+          <span className="kpi-label">Customers</span>
+          <strong>{customers.length || '-'}</strong>
+          <small>Active records available to the front desk</small>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">Memorials</span>
+          <strong>{memorials.length || '-'}</strong>
+          <small>Stone records including local intake additions</small>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">Unscheduled Jobs</span>
+          <strong>{unscheduledServices.length || '-'}</strong>
+          <small>Still need front desk action</small>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">Cemeteries</span>
+          <strong>{cemeteries.length || '-'}</strong>
+          <small>Known locations with memorial records</small>
+        </div>
+      </section>
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <h3>Quick Actions</h3>
+            <span className="meta">Most-used workflow shortcuts</span>
+          </div>
+          <div className="quick-links">
+            <button className="quick-link-card quick-link-btn" type="button" onClick={() => openOnboardingWorkflow()}>
+              <strong>Onboard Customer</strong>
+              <span>Create a customer and attach a new stone record.</span>
+            </button>
+            <a className="quick-link-card" href="#/frontdesk/customers">
+              <strong>Customer Records</strong>
+              <span>Update contact info and add stones under an existing customer.</span>
+            </a>
+            <a className="quick-link-card" href="#/frontdesk/scheduling">
+              <strong>Scheduling</strong>
+              <span>Open the calendar and assign the service queue.</span>
+            </a>
+            <a className="quick-link-card" href="#/frontdesk/cemeteries">
+              <strong>Cemeteries</strong>
+              <span>Review cemetery info and all stones serviced there.</span>
+            </a>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h3>Monthly Revenue</h3>
+            <span className="meta">Collected vs scheduled snapshot</span>
+          </div>
+          <RevenueSnapshotChart rows={revenueRows} />
+        </div>
+      </section>
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <h3>Upcoming Services</h3>
+            <a className="ghost-btn" href="#/frontdesk/scheduling">View All</a>
+          </div>
+          {loading && <p className="meta">Loading upcoming services...</p>}
+          {!loading && upcoming.length === 0 && <p className="meta">No upcoming services scheduled.</p>}
+          {!loading && upcoming.length > 0 && (
+            <ul className="service-list">
+              {upcoming.map((service) => (
+                <li key={service.id}>
+                  <strong>{service.memorial_name || `Service #${service.id}`}</strong>
+                  <span>{service.cemetery_name || 'No cemetery'}</span>
+                  <div className="meta">Service date: {formatDateTimeShort(service.scheduled_start)}</div>
+                  <div className="meta">{service.status_display || service.status}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h3>Service Snapshot</h3>
+            <span className="meta">Front desk priorities right now</span>
+          </div>
+          <div className="compact-stack">
+            <div className="queue-row">
+              <strong>{workflowStore.localMemorials.length}</strong>
+              <span>New memorial intake records were added through the frontend workflow.</span>
+            </div>
+            <div className="queue-row">
+              <strong>{summary?.services_today ?? 0}</strong>
+              <span>Services are on the schedule for today.</span>
+            </div>
+            <div className="queue-row">
+              <strong>{unscheduledServices.length}</strong>
+              <span>Jobs still need scheduling or technician assignment.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function MemorialsPageModern() {
+  const memorialState = useApi('/memorials/', []);
+  const workflowStore = useWorkflowStore();
+  const memorials = useMemo(
+    () => buildMergedMemorials(memorialState.data || [], workflowStore),
+    [memorialState.data, workflowStore]
+  );
+  const [selectedId, setSelectedId] = useState('');
+  const [editor, setEditor] = useState(createMemorialFormState());
+  const [saveState, setSaveState] = useState({ error: '', success: '' });
+
+  useEffect(() => {
+    if (!memorials.length) {
+      setSelectedId('');
+      return;
+    }
+    const exists = memorials.some((row) => String(row.id) === String(selectedId));
+    if (!exists) setSelectedId(String(memorials[0].id));
+  }, [memorials, selectedId]);
+
+  const selectedMemorial = useMemo(
+    () => memorials.find((row) => String(row.id) === String(selectedId)) || null,
+    [memorials, selectedId]
+  );
+
+  useEffect(() => {
+    if (!selectedMemorial) return;
+    setEditor(createMemorialFormState(selectedMemorial));
+    setSaveState({ error: '', success: '' });
+  }, [selectedMemorial]);
+
+  function handleSave(event) {
+    event.preventDefault();
+    if (!selectedMemorial) return;
+    if (selectedMemorial.source === 'local') {
+      upsertLocalMemorial({ ...selectedMemorial, ...editor });
+    } else {
+      saveMemorialMeta(selectedMemorial.id, {
+        name_on_stone: editor.name_on_stone,
+        material: editor.material,
+        stone_style: editor.stone_style,
+        has_plaque: editor.has_plaque,
+        has_paint: editor.has_paint,
+        decoration_notes: editor.decoration_notes,
+        location_description: editor.location_description,
+        age_years: editor.age_years,
+        previous_cleaning_notes: editor.previous_cleaning_notes,
+        notes: editor.notes,
+        photo_names: editor.photo_names,
+        regional_team: editor.regional_team
+      });
+    }
+    setSaveState({ error: '', success: 'Memorial details saved.' });
+  }
+
+  return (
+    <>
+      <div className="page-heading page-heading-actions">
+        <div>
+          <h1 className="page-title">Memorials</h1>
+          <p className="page-subtitle">Stone-focused records with clearer field grouping and a dedicated service snapshot.</p>
+        </div>
+        <button className="primary-btn" type="button" onClick={() => openOnboardingWorkflow()}>
+          Add Memorial
+        </button>
+      </div>
+
+      {memorialState.error && <div className="card warn">Backend error: {memorialState.error}</div>}
+
+      <section className="grid-2 memorials-workspace">
+        <div className="card">
+          <div className="card-header">
+            <h3>Memorial Library</h3>
+            <span className="meta">{memorials.length} records</span>
+          </div>
+          {memorialState.loading && <p className="meta">Loading memorials...</p>}
+          {!memorialState.loading && memorials.length === 0 && <p className="meta">No memorials yet.</p>}
+          {!memorialState.loading && memorials.length > 0 && (
+            <div className="record-stack">
+              {memorials.map((memorial) => (
+                <button
+                  key={memorial.id}
+                  type="button"
+                  className={`record-card${String(selectedId) === String(memorial.id) ? ' active' : ''}`}
+                  onClick={() => setSelectedId(String(memorial.id))}
+                >
+                  <div className="record-card-header">
+                    <span className="stone-chip">Stone Record</span>
+                    <span className="meta">{memorial.material_label}</span>
+                  </div>
+                  <strong>{memorial.name_on_stone || memorial.customer || 'Memorial record'}</strong>
+                  <span>{memorial.cemetery || 'No cemetery listed'}</span>
+                  <div className="record-card-meta">
+                    <span>Customer: {memorial.customer || 'Unknown'}</span>
+                    <span>Last service: {memorial.last_service_date ? formatDateOnly(memorial.last_service_date) : 'Not logged'}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="card">
+          {!selectedMemorial && <p className="meta">Select a memorial to review the stone details.</p>}
+          {selectedMemorial && (
+            <>
+              <div className="memorial-hero">
+                <div>
+                  <div className="detail-kicker">Memorial detail</div>
+                  <h3>{editor.name_on_stone || selectedMemorial.customer || 'Memorial record'}</h3>
+                  <p className="meta">{getMaterialLabel(editor.material)}{editor.stone_style ? ` | ${editor.stone_style}` : ''}</p>
+                </div>
+                <div className="detail-pill-row">
+                  <span className="detail-pill">{selectedMemorial.cemetery || 'No cemetery'}</span>
+                  <span className="detail-pill">{selectedMemorial.customer || 'No customer'}</span>
+                </div>
+              </div>
+
+              <div className="detail-grid">
+                <div className="detail-card">
+                  <span className="detail-label">Service Snapshot</span>
+                  <strong>{selectedMemorial.last_service_date ? formatDateOnly(selectedMemorial.last_service_date) : 'Not scheduled yet'}</strong>
+                  <p>Regional team: {editor.regional_team || selectedMemorial.regional_team || 'Scheduling team'}</p>
+                </div>
+                <div className="detail-card">
+                  <span className="detail-label">Stone Location</span>
+                  <strong>{editor.location_description || 'Capture location details here'}</strong>
+                  <p>{editor.photo_names.length ? `${editor.photo_names.length} reference photo names saved` : 'No reference photo names saved yet'}</p>
+                </div>
+              </div>
+
+              <form className="form" onSubmit={handleSave}>
+                <MemorialFormFields
+                  form={editor}
+                  onChange={(event) => handleDraftFieldChange(setEditor, event)}
+                  onPhotoNamesChange={(photoNames) => setEditor((prev) => ({ ...prev, photo_names: photoNames }))}
+                />
+                {saveState.error && <div className="form-error">{saveState.error}</div>}
+                {saveState.success && <div className="card form-success"><strong>{saveState.success}</strong></div>}
+                <button className="primary-btn" type="submit">Save Memorial Details</button>
+              </form>
+            </>
+          )}
+        </div>
+      </section>
+    </>
+  );
+}
+
+function CustomersPageModern() {
+  const customerState = useApi('/manage/customers/', [], true, { refreshEvent: 'hs:customers-updated' });
+  const memorialState = useApi('/memorials/', []);
+  const workflowStore = useWorkflowStore();
+  const memorials = useMemo(
+    () => buildMergedMemorials(memorialState.data || [], workflowStore),
+    [memorialState.data, workflowStore]
+  );
+  const customers = useMemo(
+    () => buildMergedCustomers(customerState.data || [], memorials, workflowStore),
+    [customerState.data, memorials, workflowStore]
+  );
+  const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState(createCustomerFormState());
+  const [saveState, setSaveState] = useState({ loading: false, error: '', success: '' });
+
+  useEffect(() => {
+    if (!customers.length) {
+      setSelectedCustomerId('');
+      return;
+    }
+    const exists = customers.some((row) => String(row.id) === String(selectedCustomerId));
+    if (!exists) {
+      setSelectedCustomerId(String(customers[0].id));
+      setEditingId(customers[0].id);
+      setForm(createCustomerFormState(customers[0]));
+    }
+  }, [customers, selectedCustomerId]);
+
+  function startCreate() {
+    setEditingId(null);
+    setSelectedCustomerId('');
+    setForm(createCustomerFormState());
+    setSaveState({ loading: false, error: '', success: '' });
+  }
+
+  function startEdit(customer) {
+    setEditingId(customer.id);
+    setSelectedCustomerId(String(customer.id));
+    setForm(createCustomerFormState(customer));
+    setSaveState({ loading: false, error: '', success: '' });
+  }
+
+  const selectedCustomer = useMemo(
+    () => customers.find((customer) => String(customer.id) === String(selectedCustomerId)) || null,
+    [customers, selectedCustomerId]
+  );
+
+  const selectedCustomerMemorials = useMemo(
+    () => memorials.filter((memorial) => selectedCustomer && matchesCustomerRecord(memorial, selectedCustomer)),
+    [memorials, selectedCustomer]
+  );
+
+  async function handleSave(event) {
+    event.preventDefault();
+    setSaveState({ loading: true, error: '', success: '' });
+    try {
+      const payload = {
+        full_name: form.full_name,
+        email: form.email,
+        phone: form.phone,
+        address_line1: form.address_line1,
+        address_line2: form.address_line2,
+        city: form.city,
+        state: form.state,
+        postal_code: form.postal_code,
+        notes: form.notes
+      };
+      const isEdit = Boolean(editingId);
+      const res = await apiFetch(isEdit ? `/manage/customers/${editingId}/` : '/manage/customers/', {
+        method: isEdit ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(formatApiError(json, `Save failed (${res.status})`));
+      saveCustomerMeta(json.customer.id, {
+        how_heard_about_us: form.how_heard_about_us,
+        address_line1: form.address_line1,
+        address_line2: form.address_line2,
+        city: form.city,
+        state: form.state,
+        postal_code: form.postal_code,
+        notes: form.notes
+      });
+      setEditingId(json.customer.id);
+      setSelectedCustomerId(String(json.customer.id));
+      setForm(createCustomerFormState({ ...form, ...json.customer }));
+      setSaveState({ loading: false, error: '', success: isEdit ? 'Customer updated.' : 'Customer created.' });
+      window.dispatchEvent(new Event('hs:customers-updated'));
+    } catch (err) {
+      setSaveState({ loading: false, error: err.message || 'Failed to save customer.', success: '' });
+    }
+  }
+
+  async function handleDelete(customerId) {
+    if (!window.confirm('Delete this customer?')) return;
+    setSaveState({ loading: true, error: '', success: '' });
+    try {
+      const res = await apiFetch(`/manage/customers/${customerId}/`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`Delete failed (${res.status})`);
+      setSaveState({ loading: false, error: '', success: 'Customer deleted.' });
+      startCreate();
+      window.dispatchEvent(new Event('hs:customers-updated'));
+    } catch (err) {
+      setSaveState({ loading: false, error: err.message || 'Failed to delete customer.', success: '' });
+    }
+  }
+
+  return (
+    <>
+      <div className="page-heading page-heading-actions">
+        <div>
+          <h1 className="page-title">Customers</h1>
+          <p className="page-subtitle">Manage contact records and add more stones under an existing customer profile.</p>
+        </div>
+        <button className="primary-btn" type="button" onClick={() => openOnboardingWorkflow()}>
+          Onboard Customer
+        </button>
+      </div>
+
+      {(customerState.error || memorialState.error) && (
+        <div className="card warn">Backend error: {customerState.error || memorialState.error}</div>
+      )}
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <h3>{editingId ? `Customer #${editingId}` : 'New Customer'}</h3>
+            <button className="ghost-btn" type="button" onClick={startCreate}>Clear</button>
+          </div>
+          <form className="form" onSubmit={handleSave}>
+            <CustomerFormFields form={form} onChange={(event) => handleDraftFieldChange(setForm, event)} />
+            {saveState.error && <div className="form-error">{saveState.error}</div>}
+            {saveState.success && <div className="card form-success"><strong>{saveState.success}</strong></div>}
+            <button className="primary-btn" type="submit" disabled={saveState.loading}>
+              {saveState.loading ? 'Saving...' : (editingId ? 'Save Customer' : 'Create Customer')}
+            </button>
+          </form>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h3>Customer List</h3>
+            <span className="meta">{customers.length} records</span>
+          </div>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Customer</th>
+                  <th>Memorials</th>
+                  <th>Email</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {customerState.loading && <tr><td colSpan="4" className="meta">Loading customers...</td></tr>}
+                {!customerState.loading && customers.length === 0 && <tr><td colSpan="4" className="meta">No customers yet.</td></tr>}
+                {!customerState.loading && customers.map((customer) => (
+                  <tr key={customer.id}>
+                    <td>
+                      <strong>{customer.full_name}</strong>
+                      <div className="meta">{customer.how_heard_about_us || 'Referral source not captured yet'}</div>
+                    </td>
+                    <td>{customer.memorials_count || 0}</td>
+                    <td>{customer.email || '-'}</td>
+                    <td>
+                      <div className="table-action-cell">
+                        <button className="ghost-btn" type="button" onClick={() => startEdit(customer)}>Edit</button>
+                        <button
+                          className="ghost-btn"
+                          type="button"
+                          onClick={() => openOnboardingWorkflow({
+                            existing_customer_id: customer.id,
+                            customer_name: customer.full_name
+                          })}
+                        >
+                          Add Stone
+                        </button>
+                        <button className="ghost-btn" type="button" onClick={() => handleDelete(customer.id)}>Delete</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <h3>Selected Customer</h3>
+            {selectedCustomer && (
+              <button
+                className="ghost-btn"
+                type="button"
+                onClick={() => openOnboardingWorkflow({
+                  existing_customer_id: selectedCustomer.id,
+                  customer_name: selectedCustomer.full_name
+                })}
+              >
+                Add Memorial
+              </button>
+            )}
+          </div>
+          {!selectedCustomer && <p className="meta">Select a customer to review their profile.</p>}
+          {selectedCustomer && (
+            <div className="detail-grid">
+              <div className="detail-card">
+                <span className="detail-label">Contact</span>
+                <strong>{selectedCustomer.full_name}</strong>
+                <p>{selectedCustomer.email || 'No email saved'}</p>
+                <p>{selectedCustomer.phone || 'No phone saved'}</p>
+              </div>
+              <div className="detail-card">
+                <span className="detail-label">Referral Source</span>
+                <strong>{selectedCustomer.how_heard_about_us || 'Not captured'}</strong>
+                <p>{selectedCustomer.last_contact ? `Last contact ${formatDateOnly(selectedCustomer.last_contact)}` : 'No last contact logged'}</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="card">
+          <h3>Memorials Under This Customer</h3>
+          {!selectedCustomer && <p className="meta">Select a customer first.</p>}
+          {selectedCustomer && selectedCustomerMemorials.length === 0 && (
+            <p className="meta">No memorials are attached to this customer yet.</p>
+          )}
+          {selectedCustomer && selectedCustomerMemorials.length > 0 && (
+            <div className="record-stack compact-record-stack">
+              {selectedCustomerMemorials.map((memorial) => (
+                <div key={memorial.id} className="record-card record-card-static">
+                  <div className="record-card-header">
+                    <span className="stone-chip">Stone</span>
+                    <span className="meta">{memorial.material_label}</span>
+                  </div>
+                  <strong>{memorial.name_on_stone || memorial.customer || 'Memorial record'}</strong>
+                  <span>{memorial.cemetery || 'No cemetery listed'}</span>
+                  <div className="record-card-meta">
+                    <span>{memorial.location_description || 'Location details not captured yet'}</span>
+                    <span>{memorial.last_service_date ? `Last service ${formatDateOnly(memorial.last_service_date)}` : 'No service logged'}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+    </>
+  );
+}
+
+function CemeteriesPageModern() {
+  const cemeteryState = useApi('/cemeteries/', []);
+  const memorialState = useApi('/memorials/', []);
+  const workflowStore = useWorkflowStore();
+  const memorials = useMemo(
+    () => buildMergedMemorials(memorialState.data || [], workflowStore),
+    [memorialState.data, workflowStore]
+  );
+  const cemeteries = useMemo(
+    () => buildMergedCemeteries(cemeteryState.data || [], memorials, workflowStore),
+    [cemeteryState.data, memorials, workflowStore]
+  );
+  const [selectedCemeteryId, setSelectedCemeteryId] = useState('');
+  const [form, setForm] = useState(createCemeteryFormState());
+  const [saveState, setSaveState] = useState({ success: '' });
+
+  useEffect(() => {
+    if (!cemeteries.length) return;
+    const exists = cemeteries.some((row) => String(row.id) === String(selectedCemeteryId));
+    if (!exists) {
+      setSelectedCemeteryId(String(cemeteries[0].id));
+      setForm(createCemeteryFormState(cemeteries[0]));
+    }
+  }, [cemeteries, selectedCemeteryId]);
+
+  const selectedCemetery = useMemo(
+    () => cemeteries.find((cemetery) => String(cemetery.id) === String(selectedCemeteryId)) || null,
+    [cemeteries, selectedCemeteryId]
+  );
+
+  useEffect(() => {
+    if (!selectedCemetery) return;
+    setForm(createCemeteryFormState(selectedCemetery));
+    setSaveState({ success: '' });
+  }, [selectedCemetery]);
+
+  const cemeteryMemorials = useMemo(
+    () => memorials.filter((memorial) => selectedCemetery && matchesCemeteryRecord(memorial, selectedCemetery)),
+    [memorials, selectedCemetery]
+  );
+
+  function handleSave(event) {
+    event.preventDefault();
+    const nextRecord = { ...form };
+    if (!nextRecord.id) {
+      nextRecord.id = makeLocalId('cemetery');
+      upsertLocalCemetery(nextRecord);
+      setSelectedCemeteryId(String(nextRecord.id));
+    } else if (String(nextRecord.id).startsWith('local-')) {
+      upsertLocalCemetery(nextRecord);
+    } else {
+      saveCemeteryMeta(nextRecord.id, nextRecord);
+    }
+    setSaveState({ success: 'Cemetery details saved.' });
+  }
+
+  return (
+    <>
+      <div className="page-heading page-heading-actions">
+        <div>
+          <h1 className="page-title">Cemeteries</h1>
+          <p className="page-subtitle">Capture the cemetery info first, then review every stone serviced inside that location.</p>
+        </div>
+        <button className="primary-btn" type="button" onClick={() => openOnboardingWorkflow()}>
+          Add Stone Intake
+        </button>
+      </div>
+
+      {(cemeteryState.error || memorialState.error) && (
+        <div className="card warn">Backend error: {cemeteryState.error || memorialState.error}</div>
+      )}
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <h3>{form.id ? 'Cemetery Details' : 'New Cemetery'}</h3>
+            <button
+              className="ghost-btn"
+              type="button"
+              onClick={() => {
+                setSelectedCemeteryId('');
+                setForm(createCemeteryFormState());
+              }}
+            >
+              New
+            </button>
+          </div>
+          <form className="form" onSubmit={handleSave}>
+            <CemeteryFormFields form={form} onChange={(event) => handleDraftFieldChange(setForm, event)} />
+            {saveState.success && <div className="card form-success"><strong>{saveState.success}</strong></div>}
+            <button className="primary-btn" type="submit">Save Cemetery</button>
+          </form>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h3>Cemetery List</h3>
+            <span className="meta">{cemeteries.length} locations</span>
+          </div>
+          <div className="record-stack">
+            {cemeteries.map((cemetery) => (
+              <button
+                key={cemetery.id}
+                type="button"
+                className={`record-card${String(selectedCemeteryId) === String(cemetery.id) ? ' active' : ''}`}
+                onClick={() => setSelectedCemeteryId(String(cemetery.id))}
+              >
+                <strong>{cemetery.name}</strong>
+                <span>{[cemetery.city, cemetery.state].filter(Boolean).join(', ') || 'City and state not captured yet'}</span>
+                <div className="record-card-meta">
+                  <span>{cemetery.address || 'No address saved'}</span>
+                  <span>{cemetery.memorials_count || 0} stones</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <div className="card">
+        <div className="card-header">
+          <h3>Stones In This Cemetery</h3>
+          <span className="meta">Customer info intentionally hidden here</span>
+        </div>
+        {!selectedCemetery && <p className="meta">Select a cemetery first.</p>}
+        {selectedCemetery && cemeteryMemorials.length === 0 && (
+          <p className="meta">No stones are attached to this cemetery yet.</p>
+        )}
+        {selectedCemetery && cemeteryMemorials.length > 0 && (
+          <div className="record-stack compact-record-stack">
+            {cemeteryMemorials.map((memorial) => (
+              <div key={memorial.id} className="record-card record-card-static">
+                <div className="record-card-header">
+                  <span className="stone-chip">Stone</span>
+                  <span className="meta">{memorial.material_label}</span>
+                </div>
+                <strong>{memorial.name_on_stone || 'Memorial record'}</strong>
+                <span>{memorial.location_description || 'Location details not captured yet'}</span>
+                <div className="record-card-meta">
+                  <span>{memorial.stone_style || 'Style not captured'}</span>
+                  <span>{memorial.last_service_date ? `Last service ${formatDateOnly(memorial.last_service_date)}` : 'No service logged'}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function OnboardingPageModern() {
+  const customerState = useApi('/manage/customers/', [], true, { refreshEvent: 'hs:customers-updated' });
+  const cemeteryState = useApi('/cemeteries/', []);
+  const workflowStore = useWorkflowStore();
+  const draft = useMemo(() => readOnboardingDraft(), []);
+  const cemeteries = useMemo(
+    () => buildMergedCemeteries(cemeteryState.data || [], [], workflowStore),
+    [cemeteryState.data, workflowStore]
+  );
+  const customers = Array.isArray(customerState.data) ? customerState.data : [];
+  const [customerMode, setCustomerMode] = useState(draft.existing_customer_id ? 'existing' : 'new');
+  const [selectedCustomerId, setSelectedCustomerId] = useState(String(draft.existing_customer_id || ''));
+  const [customerForm, setCustomerForm] = useState(createCustomerFormState({
+    full_name: draft.customer_name || ''
+  }));
+  const [cemeteryMode, setCemeteryMode] = useState(draft.existing_cemetery_id ? 'existing' : 'new');
+  const [selectedCemeteryId, setSelectedCemeteryId] = useState(String(draft.existing_cemetery_id || ''));
+  const [cemeteryForm, setCemeteryForm] = useState(createCemeteryFormState());
+  const [memorialForm, setMemorialForm] = useState(createMemorialFormState());
+  const [submitState, setSubmitState] = useState({ loading: false, error: '', success: '' });
+
+  function handleClearDraft() {
+    clearOnboardingDraft();
+    setCustomerMode('new');
+    setSelectedCustomerId('');
+    setCustomerForm(createCustomerFormState());
+    setCemeteryMode('new');
+    setSelectedCemeteryId('');
+    setCemeteryForm(createCemeteryFormState());
+    setMemorialForm(createMemorialFormState());
+    setSubmitState({ loading: false, error: '', success: '' });
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setSubmitState({ loading: true, error: '', success: '' });
+    try {
+      let customerRecord = null;
+
+      if (customerMode === 'existing') {
+        customerRecord = customers.find((customer) => String(customer.id) === String(selectedCustomerId)) || null;
+        if (!customerRecord) throw new Error('Select an existing customer.');
+      } else {
+        const payload = {
+          full_name: customerForm.full_name,
+          email: customerForm.email,
+          phone: customerForm.phone,
+          address_line1: customerForm.address_line1,
+          address_line2: customerForm.address_line2,
+          city: customerForm.city,
+          state: customerForm.state,
+          postal_code: customerForm.postal_code,
+          notes: customerForm.notes
+        };
+        const res = await apiFetch('/manage/customers/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(formatApiError(json, `Create failed (${res.status})`));
+        customerRecord = json.customer;
+        window.dispatchEvent(new Event('hs:customers-updated'));
+      }
+
+      saveCustomerMeta(customerRecord.id, {
+        how_heard_about_us: customerForm.how_heard_about_us,
+        address_line1: customerForm.address_line1,
+        address_line2: customerForm.address_line2,
+        city: customerForm.city,
+        state: customerForm.state,
+        postal_code: customerForm.postal_code,
+        notes: customerForm.notes
+      });
+
+      let cemeteryRecord = null;
+      if (cemeteryMode === 'existing') {
+        cemeteryRecord = cemeteries.find((cemetery) => String(cemetery.id) === String(selectedCemeteryId)) || null;
+        if (!cemeteryRecord) throw new Error('Select an existing cemetery.');
+      } else {
+        cemeteryRecord = {
+          ...cemeteryForm,
+          id: cemeteryForm.id || makeLocalId('cemetery')
+        };
+        upsertLocalCemetery(cemeteryRecord);
+      }
+
+      const memorialRecord = {
+        ...memorialForm,
+        id: makeLocalId('memorial'),
+        customer_id: customerRecord.id,
+        customer: customerRecord.full_name,
+        cemetery_id: cemeteryRecord.id,
+        cemetery: cemeteryRecord.name,
+        name_on_stone: memorialForm.name_on_stone || customerRecord.full_name
+      };
+      upsertLocalMemorial(memorialRecord);
+      clearOnboardingDraft();
+      setSubmitState({ loading: false, error: '', success: 'Customer and memorial intake saved.' });
+      setCustomerMode('new');
+      setSelectedCustomerId('');
+      setCustomerForm(createCustomerFormState());
+      setCemeteryMode('new');
+      setSelectedCemeteryId('');
+      setCemeteryForm(createCemeteryFormState());
+      setMemorialForm(createMemorialFormState());
+    } catch (err) {
+      setSubmitState({ loading: false, error: err.message || 'Failed to save onboarding.', success: '' });
+    }
+  }
+
+  return (
+    <>
+      <div className="page-heading page-heading-actions">
+        <div>
+          <h1 className="page-title">Onboarding</h1>
+          <p className="page-subtitle">Create a customer, capture how they found you, and attach a stone under the right cemetery.</p>
+        </div>
+        <button className="ghost-btn" type="button" onClick={handleClearDraft}>Clear Draft</button>
+      </div>
+
+      {(customerState.error || cemeteryState.error) && (
+        <div className="card warn">Backend error: {customerState.error || cemeteryState.error}</div>
+      )}
+
+      <form className="form" onSubmit={handleSubmit}>
+        <section className="grid-2">
+          <div className="card">
+            <div className="card-header">
+              <h3>Customer</h3>
+              <div className="toggle-group">
+                <button
+                  type="button"
+                  className={`toggle-btn${customerMode === 'new' ? ' active' : ''}`}
+                  onClick={() => setCustomerMode('new')}
+                >
+                  New
+                </button>
+                <button
+                  type="button"
+                  className={`toggle-btn${customerMode === 'existing' ? ' active' : ''}`}
+                  onClick={() => setCustomerMode('existing')}
+                >
+                  Existing
+                </button>
+              </div>
+            </div>
+            {customerMode === 'existing' && (
+              <>
+                <label>Existing Customer</label>
+                <select value={selectedCustomerId} onChange={(event) => setSelectedCustomerId(event.target.value)} required>
+                  <option value="">Select customer</option>
+                  {customers.map((customer) => (
+                    <option key={customer.id} value={customer.id}>{customer.full_name}</option>
+                  ))}
+                </select>
+                <label>How They Heard About Us</label>
+                <input
+                  name="how_heard_about_us"
+                  value={customerForm.how_heard_about_us}
+                  onChange={(event) => handleDraftFieldChange(setCustomerForm, event)}
+                />
+              </>
+            )}
+            {customerMode === 'new' && (
+              <CustomerFormFields form={customerForm} onChange={(event) => handleDraftFieldChange(setCustomerForm, event)} />
+            )}
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <h3>Cemetery</h3>
+              <div className="toggle-group">
+                <button
+                  type="button"
+                  className={`toggle-btn${cemeteryMode === 'existing' ? ' active' : ''}`}
+                  onClick={() => setCemeteryMode('existing')}
+                >
+                  Existing
+                </button>
+                <button
+                  type="button"
+                  className={`toggle-btn${cemeteryMode === 'new' ? ' active' : ''}`}
+                  onClick={() => setCemeteryMode('new')}
+                >
+                  New
+                </button>
+              </div>
+            </div>
+            {cemeteryMode === 'existing' && (
+              <>
+                <label>Existing Cemetery</label>
+                <select value={selectedCemeteryId} onChange={(event) => setSelectedCemeteryId(event.target.value)} required>
+                  <option value="">Select cemetery</option>
+                  {cemeteries.map((cemetery) => (
+                    <option key={cemetery.id} value={cemetery.id}>{cemetery.name}</option>
+                  ))}
+                </select>
+              </>
+            )}
+            {cemeteryMode === 'new' && (
+              <CemeteryFormFields form={cemeteryForm} onChange={(event) => handleDraftFieldChange(setCemeteryForm, event)} />
+            )}
+          </div>
+        </section>
+
+        <div className="card">
+          <h3>Stone Information</h3>
+          <MemorialFormFields
+            form={memorialForm}
+            onChange={(event) => handleDraftFieldChange(setMemorialForm, event)}
+            onPhotoNamesChange={(photoNames) => setMemorialForm((prev) => ({ ...prev, photo_names: photoNames }))}
+          />
+        </div>
+
+        {submitState.error && <div className="form-error">{submitState.error}</div>}
+        {submitState.success && <div className="card form-success"><strong>{submitState.success}</strong></div>}
+        <button className="primary-btn" type="submit" disabled={submitState.loading}>
+          {submitState.loading ? 'Saving...' : 'Save Onboarding Record'}
+        </button>
+      </form>
+    </>
+  );
+}
+
+ROUTES.admin.dashboard = DashboardPageModern;
+ROUTES.admin.memorials = MemorialsPageModern;
+ROUTES.admin.customers = CustomersPageModern;
+ROUTES.admin.cemeteries = CemeteriesPageModern;
+ROUTES.admin.onboarding = OnboardingPageModern;
+ROUTES.frontdesk.dashboard = FrontDeskDashboardPageModern;
+ROUTES.frontdesk.memorials = MemorialsPageModern;
+ROUTES.frontdesk.customers = CustomersPageModern;
+ROUTES.frontdesk.cemeteries = CemeteriesPageModern;
+ROUTES.frontdesk.onboarding = OnboardingPageModern;
 
 function LoginPage({ form, authState, onChange, onSubmit }) {
   return (
