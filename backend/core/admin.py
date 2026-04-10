@@ -35,6 +35,12 @@ class PhotoInline(admin.TabularInline):
     extra = 0
 
 
+class CustomerSurveySubmissionInline(admin.StackedInline):
+    model = models.CustomerSurveySubmission
+    extra = 0
+    max_num = 1
+
+
 class EmployeeInline(admin.StackedInline):
     model = models.Employee
     extra = 0
@@ -137,6 +143,23 @@ class PhotoAdmin(TimestampedReadonlyMixin, admin.ModelAdmin):
     list_display = ("id", "memorial", "service", "photo_type", "caption")
     list_filter = ("photo_type",)
     search_fields = ("caption", "memorial__id", "service__id")
+
+
+@admin.register(models.CustomerSurveyRequest)
+class CustomerSurveyRequestAdmin(TimestampedReadonlyMixin, admin.ModelAdmin):
+    list_display = ("service", "status", "sent_at", "expires_at", "submitted_at")
+    search_fields = ("service__id", "service__memorial__customer__full_name", "token")
+    readonly_fields = ("token", "created_at", "updated_at")
+    inlines = [CustomerSurveySubmissionInline]
+
+    def status(self, obj):
+        return obj.status
+
+
+@admin.register(models.CustomerSurveySubmission)
+class CustomerSurveySubmissionAdmin(TimestampedReadonlyMixin, admin.ModelAdmin):
+    list_display = ("survey_request", "customer_name", "email", "phone")
+    search_fields = ("customer_name", "email", "phone", "survey_request__service__id")
 
 
 @admin.register(models.Invoice)

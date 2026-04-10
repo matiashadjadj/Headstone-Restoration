@@ -5,6 +5,7 @@ from rest_framework import serializers
 from rest_framework.permissions import AllowAny
 from rest_framework.authentication import BasicAuthentication, SessionAuthentication
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
+from datetime import timedelta
 from django.utils import timezone
 from django.db import models, transaction
 from django.db.models import Q, Sum
@@ -19,18 +20,21 @@ from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.storage import default_storage
+from urllib.parse import urlparse
 
 from communications.exceptions import EmailDeliveryError
 from communications.services import resolve_from_email, send_email
-from core.models import Service, ServiceOption, Employee, EmployeeInvite, UserProfile, ServiceAssignment, Invoice, Memorial, Customer, Cemetery, Payment, Photo
+from core.models import Service, ServiceOption, Employee, EmployeeInvite, UserProfile, ServiceAssignment, Invoice, Memorial, Customer, Cemetery, Plot, Payment, Photo, CustomerSurveyRequest, CustomerSurveySubmission
 from payments import stripe_client
 from core.api.serializers import (
     AssignTechnicianSerializer,
     DashboardServiceSerializer,
     RecentServiceSerializer,
     MemorialSummarySerializer,
+    MemorialCreateSerializer,
     CustomerSummarySerializer,
     CemeterySummarySerializer,
+    CemeteryUpsertSerializer,
     TechnicianSerializer,
     SchedulingServiceSerializer,
     CreateSchedulingServiceSerializer,
@@ -51,11 +55,32 @@ from core.api.serializers import (
     UserProfileDetailSerializer,
     UserProfileSerializer,
     CustomerInvoiceSerializer,
+    AdminInvoiceSerializer,
     CreateCheckoutSessionSerializer,
     VerifyCheckoutSessionSerializer,
+    AdminSendInvoiceSerializer,
+    CustomerSurveyDetailSerializer,
+    CustomerSurveyRequestCreateSerializer,
+    CustomerSurveyRequestSerializer,
+    CustomerSurveySubmissionSerializer,
+    PublicCustomerSurveySubmissionSerializer,
+    PublicSurveyContextSerializer,
 )
 
 INVALID_INVITE_MESSAGE = "Invite is invalid or expired."
+
+DEFAULT_INVOICE_SUBJECT = "Invoice #{{invoice_id}} for {{client_name}}"
+DEFAULT_INVOICE_BODY = (
+    "Hello {{client_name}},\n\n"
+    "Your invoice for {{service_name}} is ready.\n"
+    "Amount due: {{amount_due}}\n"
+    "Due date: {{due_date}}\n\n"
+    "Pay securely here:\n"
+    "{{payment_link}}\n\n"
+    "If you have any questions, reply to this email.\n\n"
+    "Best regards,\n"
+    "Headstone Restoration"
+)
 
 
 def resolve_session_user(user, request=None):
@@ -123,6 +148,31 @@ def resolve_session_user(user, request=None):
     return None
 
 
+def render_customer_template(template: str, *, replacements: dict[str, str]) -> str:
+    result = template or ""
+    for token, value in replacements.items():
+        result = result.replace(token, value or "")
+    return result
+
+
+def build_invoice_template_replacements(*, invoice: Invoice, checkout_url: str) -> dict[str, str]:
+    customer_name = invoice.customer.full_name or "Client"
+    first_name = customer_name.split(" ")[0] if customer_name else "Client"
+    service_name = invoice.service.service_type_label if invoice.service_id and invoice.service else "your service"
+    due_date = invoice.due_date.isoformat() if invoice.due_date else "Upon receipt"
+    return {
+        "{{client_name}}": customer_name,
+        "{{customer_name}}": customer_name,
+        "{{first_name}}": first_name,
+        "{{email}}": invoice.customer.email or "",
+        "{{invoice_id}}": str(invoice.id),
+        "{{amount_due}}": f"${invoice.total_amount:.2f}",
+        "{{due_date}}": due_date,
+        "{{service_name}}": service_name,
+        "{{payment_link}}": checkout_url,
+    }
+
+
 def get_employee_invite_or_404(token: str) -> EmployeeInvite:
     invite = get_object_or_404(
         EmployeeInvite.objects.select_related("employee", "user"),
@@ -135,13 +185,167 @@ def get_employee_invite_or_404(token: str) -> EmployeeInvite:
 
 def build_frontend_invite_url(request, token: str) -> str:
     configured_base = (getattr(settings, "EMAIL_FRONTEND_BASE_URL", "") or "").rstrip("/")
+    if configured_base.endswith(".html"):
+        return f"{configured_base}?invite={token}#/setup-password"
     if configured_base:
         return f"{configured_base}/index.html?invite={token}#/setup-password"
     origin = (request.headers.get("Origin") or "").rstrip("/")
     if origin:
-        return f"{origin}/index.html?invite={token}#/setup-password"
+        try:
+            origin_host = urlparse(origin).netloc
+        except Exception:
+            origin_host = ""
+        request_host = request.get_host()
+        if origin_host and origin_host != request_host:
+            return f"{origin}/index.html?invite={token}#/setup-password"
     base = request.build_absolute_uri("/static/index.html")
     return f"{base}?invite={token}#/setup-password"
+
+
+def build_frontend_survey_url(request, token: str) -> str:
+    configured_base = (getattr(settings, "EMAIL_FRONTEND_BASE_URL", "") or "").rstrip("/")
+    if configured_base.endswith(".html"):
+        return f"{configured_base}#/survey/{token}"
+    if configured_base:
+        return f"{configured_base}/index.html#/survey/{token}"
+    origin = (request.headers.get("Origin") or "").rstrip("/")
+    if origin:
+        try:
+            origin_host = urlparse(origin).netloc
+        except Exception:
+            origin_host = ""
+        request_host = request.get_host()
+        if origin_host and origin_host != request_host:
+            return f"{origin}/index.html#/survey/{token}"
+    base = request.build_absolute_uri("/static/index.html")
+    return f"{base}#/survey/{token}"
+
+
+def send_customer_survey_email(request, survey_request: CustomerSurveyRequest) -> str:
+    service = survey_request.service
+    customer = service.memorial.customer
+    survey_url = build_frontend_survey_url(request, survey_request.token)
+    service_name = service.service_type_label or "service"
+    cemetery_name = service.memorial.plot.cemetery.name if service.memorial_id else ""
+    greeting_name = customer.full_name or "there"
+
+    send_email(
+        subject=f"Complete your {service_name} survey",
+        text_body=(
+            f"Hello {greeting_name},\n\n"
+            f"We created your {service_name} job"
+            f"{f' for {cemetery_name}' if cemetery_name else ''}.\n"
+            f"Please complete this survey so we can confirm the memorial location and details:\n\n"
+            f"{survey_url}\n\n"
+            f"This link expires in {getattr(settings, 'CUSTOMER_SURVEY_EXPIRY_DAYS', 14)} days."
+        ),
+        recipient_list=[customer.email],
+        purpose="panel",
+        reply_to=[settings.EMAIL_DEFAULT_REPLY_TO] if getattr(settings, "EMAIL_DEFAULT_REPLY_TO", "") else [],
+        metadata={
+            "flow": "customer_survey",
+            "customer_id": customer.id,
+            "service_id": service.id,
+            "survey_request_id": survey_request.id,
+        },
+    )
+    return survey_url
+
+
+def create_placeholder_memorial(customer: Customer) -> Memorial:
+    placeholder_cemetery = Cemetery.objects.create(
+        name=f"Survey Pending - {customer.full_name or f'Customer {customer.id}'}",
+    )
+    placeholder_plot = Plot.objects.create(
+        cemetery=placeholder_cemetery,
+        section="TBD",
+        row="TBD",
+        plot_number=f"pending-{customer.id}",
+    )
+    return Memorial.objects.create(customer=customer, plot=placeholder_plot)
+
+
+def apply_manual_job_details(
+    memorial: Memorial,
+    *,
+    cemetery_name: str,
+    cemetery_address: str,
+    section: str,
+    row: str,
+    plot_number: str,
+    gps_lat,
+    gps_lng,
+    locating_notes: str,
+):
+    current_plot = memorial.plot
+    cemetery = current_plot.cemetery
+    cleaned_cemetery_name = (cemetery_name or "").strip()
+    cleaned_cemetery_address = (cemetery_address or "").strip()
+    cleaned_section = (section or current_plot.section or "").strip()
+    cleaned_row = (row or current_plot.row or "").strip()
+    cleaned_plot_number = (plot_number or current_plot.plot_number or "").strip()
+    cleaned_locating_notes = (locating_notes or "").strip()
+
+    if cleaned_cemetery_name:
+        matched_cemetery = Cemetery.objects.filter(name__iexact=cleaned_cemetery_name).order_by("id").first()
+        if matched_cemetery:
+            cemetery = matched_cemetery
+        else:
+            cemetery = Cemetery.objects.create(name=cleaned_cemetery_name, address=cleaned_cemetery_address)
+    if cleaned_cemetery_address and cemetery.address != cleaned_cemetery_address:
+        cemetery.address = cleaned_cemetery_address
+        cemetery.save(update_fields=["address", "updated_at"])
+
+    target_plot = Plot.objects.filter(
+        cemetery=cemetery,
+        section=cleaned_section,
+        row=cleaned_row,
+        plot_number=cleaned_plot_number,
+    ).first()
+    if not target_plot:
+        target_plot = current_plot
+
+    plot_updates = []
+    if target_plot.cemetery_id != cemetery.id:
+        target_plot.cemetery = cemetery
+        plot_updates.append("cemetery")
+    if target_plot.section != cleaned_section:
+        target_plot.section = cleaned_section
+        plot_updates.append("section")
+    if target_plot.row != cleaned_row:
+        target_plot.row = cleaned_row
+        plot_updates.append("row")
+    if target_plot.plot_number != cleaned_plot_number:
+        target_plot.plot_number = cleaned_plot_number
+        plot_updates.append("plot_number")
+    if gps_lat is not None and target_plot.gps_lat != gps_lat:
+        target_plot.gps_lat = gps_lat
+        plot_updates.append("gps_lat")
+    if gps_lng is not None and target_plot.gps_lng != gps_lng:
+        target_plot.gps_lng = gps_lng
+        plot_updates.append("gps_lng")
+    if cleaned_locating_notes and target_plot.access_notes != cleaned_locating_notes:
+        target_plot.access_notes = cleaned_locating_notes
+        plot_updates.append("access_notes")
+    if plot_updates:
+        target_plot.save(update_fields=[*plot_updates, "updated_at"])
+
+    if memorial.plot_id != target_plot.id:
+        memorial.plot = target_plot
+        memorial.save(update_fields=["plot", "updated_at"])
+
+
+def get_customer_survey_request_by_token_or_404(token: str) -> CustomerSurveyRequest:
+    survey_request = get_object_or_404(
+        CustomerSurveyRequest.objects.select_related(
+            "service__memorial__customer",
+            "service__memorial__plot__cemetery",
+        ),
+        token=token,
+    )
+    if survey_request.status == "expired":
+        raise Http404
+    return survey_request
 
 
 def revoke_active_employee_invites(employee: Employee) -> int:
@@ -245,7 +449,12 @@ def serialize_user_profile(request, user: User):
 
 def scheduling_services_queryset():
     return (
-        Service.objects.select_related("memorial__customer", "memorial__plot__cemetery")
+        Service.objects.select_related(
+            "memorial__customer",
+            "memorial__plot__cemetery",
+            "survey_request",
+            "survey_request__submission",
+        )
         .prefetch_related("assignments__employee")
         .annotate(
             price=models.Subquery(
@@ -298,6 +507,108 @@ def resolve_service_type(service_option):
     }:
         return service_option.legacy_key
     return Service.ServiceType.OTHER
+
+
+def serialize_customer_survey_detail(request, service: Service) -> dict:
+    survey_request = getattr(service, "survey_request", None)
+    submission = getattr(survey_request, "submission", None) if survey_request else None
+    public_url = build_frontend_survey_url(request, survey_request.token) if survey_request else ""
+    return CustomerSurveyDetailSerializer(
+        {
+            "request": survey_request,
+            "public_url": public_url,
+            "service": service,
+            "submission": submission,
+        },
+        context={"request": request},
+    ).data
+
+
+def sync_survey_submission_to_service_records(service: Service, submission: CustomerSurveySubmission):
+    customer = service.memorial.customer
+    memorial = service.memorial
+    current_plot = memorial.plot
+    current_cemetery = current_plot.cemetery
+
+    customer_updates = []
+    if submission.customer_name and submission.customer_name != customer.full_name:
+        customer.full_name = submission.customer_name
+        customer_updates.append("full_name")
+    if submission.email and submission.email != customer.email:
+        customer.email = submission.email
+        customer_updates.append("email")
+    if submission.phone and submission.phone != customer.phone:
+        customer.phone = submission.phone
+        customer_updates.append("phone")
+    if customer_updates:
+        customer.save(update_fields=[*customer_updates, "updated_at"])
+
+    cemetery = current_cemetery
+    cemetery_name = (submission.cemetery_name or "").strip()
+    cemetery_address = (submission.cemetery_address or "").strip()
+    if cemetery_name:
+        matched_cemetery = Cemetery.objects.filter(name__iexact=cemetery_name).order_by("id").first()
+        if matched_cemetery:
+            cemetery = matched_cemetery
+        else:
+            cemetery = Cemetery.objects.create(name=cemetery_name, address=cemetery_address)
+    if cemetery_address and cemetery.address != cemetery_address:
+        cemetery.address = cemetery_address
+        cemetery.save(update_fields=["address", "updated_at"])
+
+    section = (submission.section or current_plot.section or "").strip()
+    row = (submission.row or current_plot.row or "").strip()
+    plot_number = (submission.plot_number or current_plot.plot_number or "").strip()
+    grave_number = (submission.grave_number or "").strip()
+    locating_notes = (submission.locating_notes or "").strip()
+    access_notes_parts = [part for part in [locating_notes, f"Grave number: {grave_number}" if grave_number else ""] if part]
+    access_notes = "\n".join(access_notes_parts)
+
+    target_plot = Plot.objects.filter(
+        cemetery=cemetery,
+        section=section,
+        row=row,
+        plot_number=plot_number,
+    ).first()
+    if not target_plot:
+        if current_plot.cemetery_id == cemetery.id:
+            target_plot = current_plot
+        else:
+            target_plot = Plot.objects.create(
+                cemetery=cemetery,
+                section=section,
+                row=row,
+                plot_number=plot_number,
+            )
+
+    plot_updates = []
+    if target_plot.cemetery_id != cemetery.id:
+        target_plot.cemetery = cemetery
+        plot_updates.append("cemetery")
+    if target_plot.section != section:
+        target_plot.section = section
+        plot_updates.append("section")
+    if target_plot.row != row:
+        target_plot.row = row
+        plot_updates.append("row")
+    if target_plot.plot_number != plot_number:
+        target_plot.plot_number = plot_number
+        plot_updates.append("plot_number")
+    if submission.gps_lat is not None and target_plot.gps_lat != submission.gps_lat:
+        target_plot.gps_lat = submission.gps_lat
+        plot_updates.append("gps_lat")
+    if submission.gps_lng is not None and target_plot.gps_lng != submission.gps_lng:
+        target_plot.gps_lng = submission.gps_lng
+        plot_updates.append("gps_lng")
+    if access_notes and target_plot.access_notes != access_notes:
+        target_plot.access_notes = access_notes
+        plot_updates.append("access_notes")
+    if plot_updates:
+        target_plot.save(update_fields=[*plot_updates, "updated_at"])
+
+    if memorial.plot_id != target_plot.id:
+        memorial.plot = target_plot
+        memorial.save(update_fields=["plot", "updated_at"])
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -525,6 +836,60 @@ class AssignTechnicianView(APIView):
         return Response({"ok": True, "service": payload}, status=status.HTTP_200_OK)
 
 
+@method_decorator(csrf_exempt, name="dispatch")
+class ServiceSurveyDetailView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def get(self, request, service_id):
+        service = get_object_or_404(scheduling_services_queryset(), id=service_id)
+        return Response(serialize_customer_survey_detail(request, service), status=status.HTTP_200_OK)
+
+    def post(self, request, service_id):
+        service = get_object_or_404(scheduling_services_queryset(), id=service_id)
+        serializer = CustomerSurveyRequestCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        customer = service.memorial.customer
+        if not (customer.email or "").strip():
+            return Response({"detail": "Selected customer does not have an email address for the survey."}, status=status.HTTP_400_BAD_REQUEST)
+
+        survey_request = getattr(service, "survey_request", None)
+        expires_in_days = serializer.validated_data.get("expires_in_days")
+        next_expiry = timezone.now() + timedelta(days=expires_in_days) if expires_in_days else None
+
+        if survey_request and survey_request.submitted_at:
+            payload = serialize_customer_survey_detail(request, service)
+            return Response(
+                {
+                    "ok": True,
+                    "detail": "Survey has already been submitted for this job.",
+                    **payload,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        try:
+            if survey_request:
+                survey_request.token = ""
+                survey_request.sent_at = timezone.now()
+                survey_request.expires_at = next_expiry or (
+                    timezone.now() + timedelta(days=getattr(settings, "CUSTOMER_SURVEY_EXPIRY_DAYS", 14))
+                )
+                survey_request.save()
+            else:
+                survey_request = CustomerSurveyRequest.objects.create(
+                    service=service,
+                    expires_at=next_expiry,
+                )
+            send_customer_survey_email(request, survey_request)
+        except EmailDeliveryError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        service = scheduling_services_queryset().get(id=service.id)
+        payload = serialize_customer_survey_detail(request, service)
+        return Response({"ok": True, "detail": f"Survey sent to {customer.email}.", **payload}, status=status.HTTP_201_CREATED)
+
+
 class TechnicianListView(APIView):
     permission_classes = [AllowAny]
 
@@ -579,7 +944,39 @@ class SchedulingServiceCreateView(APIView):
         serializer = CreateSchedulingServiceSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        memorial = get_object_or_404(Memorial, id=serializer.validated_data["memorial_id"])
+        memorial_id = serializer.validated_data.get("memorial_id")
+        customer_id = serializer.validated_data.get("customer_id")
+        customer = None
+        if memorial_id:
+            memorial = get_object_or_404(Memorial, id=memorial_id)
+            if customer_id and memorial.customer_id != customer_id:
+                return Response({"detail": "Selected memorial does not belong to the selected customer."}, status=status.HTTP_400_BAD_REQUEST)
+            customer = memorial.customer
+        else:
+            customer = get_object_or_404(Customer, id=customer_id)
+            memorial_qs = Memorial.objects.filter(customer=customer).order_by("id")
+            memorial_count = memorial_qs.count()
+            if memorial_count > 1:
+                return Response({"detail": "Select which memorial to use for this customer."}, status=status.HTTP_400_BAD_REQUEST)
+            memorial = None
+            if memorial_count == 1:
+                memorial = memorial_qs.first()
+
+        send_survey_email = serializer.validated_data.get("send_survey_email", False)
+        cemetery_name = serializer.validated_data.get("cemetery_name", "")
+        cemetery_address = serializer.validated_data.get("cemetery_address", "")
+        section = serializer.validated_data.get("section", "")
+        row = serializer.validated_data.get("row", "")
+        plot_number = serializer.validated_data.get("plot_number", "")
+        locating_notes = serializer.validated_data.get("locating_notes", "")
+        customer_notes = serializer.validated_data.get("customer_notes", "")
+        if memorial is None and not send_survey_email and not any(
+            (value or "").strip() for value in [cemetery_name, section, row, plot_number, locating_notes]
+        ):
+            return Response({"detail": "Enter cemetery/location details manually or choose survey email."}, status=status.HTTP_400_BAD_REQUEST)
+        if send_survey_email and not (customer.email or "").strip():
+            return Response({"detail": "Selected customer does not have an email address for the survey."}, status=status.HTTP_400_BAD_REQUEST)
+
         service_option = None
         service_option_id = serializer.validated_data.get("service_option_id")
         if service_option_id:
@@ -594,26 +991,61 @@ class SchedulingServiceCreateView(APIView):
         gps_lat = serializer.validated_data.get("gps_lat")
         gps_lng = serializer.validated_data.get("gps_lng")
 
-        with transaction.atomic():
-            if gps_lat is not None and gps_lng is not None:
-                plot = memorial.plot
-                plot.gps_lat = gps_lat
-                plot.gps_lng = gps_lng
-                plot.save(update_fields=["gps_lat", "gps_lng", "updated_at"])
+        try:
+            with transaction.atomic():
+                if memorial is None:
+                    memorial = create_placeholder_memorial(customer)
 
-            service = Service.objects.create(
-                memorial=memorial,
-                service_option=service_option,
-                service_type=service_type,
-                status=Service.Status.DRAFT,
-            )
-            set_service_price(service, initial_price)
+                if not send_survey_email:
+                    apply_manual_job_details(
+                        memorial,
+                        cemetery_name=cemetery_name,
+                        cemetery_address=cemetery_address,
+                        section=section,
+                        row=row,
+                        plot_number=plot_number,
+                        gps_lat=gps_lat,
+                        gps_lng=gps_lng,
+                        locating_notes=locating_notes,
+                    )
+                elif gps_lat is not None and gps_lng is not None:
+                    plot = memorial.plot
+                    plot.gps_lat = gps_lat
+                    plot.gps_lng = gps_lng
+                    plot.save(update_fields=["gps_lat", "gps_lng", "updated_at"])
 
-        payload = SchedulingServiceSerializer(
-            scheduling_services_queryset()
-            .get(id=service.id)
-        ).data
-        return Response({"ok": True, "service": payload}, status=status.HTTP_201_CREATED)
+                service = Service.objects.create(
+                    memorial=memorial,
+                    service_option=service_option,
+                    service_type=service_type,
+                    status=Service.Status.DRAFT,
+                    internal_notes=(customer_notes or "").strip(),
+                )
+                set_service_price(service, initial_price)
+                survey_payload = None
+                if send_survey_email:
+                    survey_request = CustomerSurveyRequest.objects.create(service=service)
+                    send_customer_survey_email(request, survey_request)
+        except EmailDeliveryError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        service = scheduling_services_queryset().get(id=service.id)
+        payload = SchedulingServiceSerializer(service).data
+        if send_survey_email:
+            survey_payload = serialize_customer_survey_detail(request, service)
+        return Response(
+            {
+                "ok": True,
+                "detail": (
+                    f"Job created and survey sent to {customer.email}."
+                    if send_survey_email
+                    else "Job created. Customer details were entered manually."
+                ),
+                "service": payload,
+                "survey": survey_payload,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -677,6 +1109,7 @@ class ServicePhotoUploadView(APIView):
         photo = Photo.objects.create(
             memorial=service.memorial,
             service=service,
+            uploaded_by=employee,
             photo_type=photo_type,
             image_url=image_url,
             caption=caption,
@@ -690,10 +1123,11 @@ class PhotoArchiveListView(APIView):
     authentication_classes = [SessionAuthentication, BasicAuthentication]
 
     def get(self, request):
-        photos = (
-            Photo.objects.select_related("memorial__customer", "memorial__plot__cemetery", "service")
-            .order_by("-created_at")
-        )
+        employee = getattr(request.user, "employee", None) if getattr(request.user, "is_authenticated", False) else None
+        photos = Photo.objects.select_related("memorial__customer", "memorial__plot__cemetery", "service")
+        if employee and employee.role not in {Employee.Role.ADMIN, Employee.Role.FRONT_DESK}:
+            photos = photos.filter(uploaded_by=employee)
+        photos = photos.order_by("-created_at")
         return Response(PhotoArchiveSerializer(photos, many=True).data)
 
 
@@ -739,17 +1173,12 @@ class SendCustomerEmailView(APIView):
 
     @staticmethod
     def _render_template(template: str, *, full_name: str = "", email: str = "") -> str:
-        first_name = full_name.split(" ")[0] if full_name else "Client"
-        replacements = {
+        return render_customer_template(template, replacements={
             "{{client_name}}": full_name or "Client",
             "{{customer_name}}": full_name or "Client",
-            "{{first_name}}": first_name,
+            "{{first_name}}": full_name.split(" ")[0] if full_name else "Client",
             "{{email}}": email or "",
-        }
-        result = template
-        for token, value in replacements.items():
-            result = result.replace(token, value)
-        return result
+        })
 
     def post(self, request):
         serializer = SendCustomerEmailSerializer(data=request.data)
@@ -961,6 +1390,159 @@ class CustomerInvoiceListView(APIView):
         return Response(CustomerInvoiceSerializer(invoices, many=True).data)
 
 
+@method_decorator(csrf_exempt, name="dispatch")
+class PublicSurveyDetailView(APIView):
+    permission_classes = [AllowAny]
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
+
+    def get(self, request, token):
+        try:
+            survey_request = get_customer_survey_request_by_token_or_404(token)
+        except Http404:
+            return Response({"detail": "Survey link is invalid or expired."}, status=status.HTTP_404_NOT_FOUND)
+
+        service = survey_request.service
+        payload = PublicSurveyContextSerializer(
+            {
+                "service_id": service.id,
+                "service_name": service.service_type_label,
+                "memorial_name": service.memorial.customer.full_name if service.memorial_id else "",
+                "cemetery_name": service.memorial.plot.cemetery.name if service.memorial_id else "",
+                "status": survey_request.status,
+                "expires_at": survey_request.expires_at,
+                "submitted_at": survey_request.submitted_at,
+            }
+        ).data
+        return Response(payload, status=status.HTTP_200_OK)
+
+    def post(self, request, token):
+        try:
+            survey_request = get_customer_survey_request_by_token_or_404(token)
+        except Http404:
+            return Response({"detail": "Survey link is invalid or expired."}, status=status.HTTP_404_NOT_FOUND)
+
+        if survey_request.submitted_at or hasattr(survey_request, "submission"):
+            return Response({"detail": "This survey has already been submitted."}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = PublicCustomerSurveySubmissionSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            submission = serializer.save(survey_request=survey_request)
+            sync_survey_submission_to_service_records(survey_request.service, submission)
+            survey_request.submitted_at = timezone.now()
+            survey_request.save(update_fields=["submitted_at", "updated_at"])
+
+        return Response(
+            {
+                "ok": True,
+                "status": survey_request.status,
+                "submitted_at": survey_request.submitted_at,
+                "submission": CustomerSurveySubmissionSerializer(submission, context={"request": request}).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class AdminInvoiceListView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def get(self, request):
+        invoices = (
+            Invoice.objects.select_related("customer", "service__memorial__plot__cemetery")
+            .prefetch_related("items")
+            .order_by(
+                models.Case(
+                    models.When(status=Invoice.Status.PAID, then=2),
+                    models.When(status=Invoice.Status.SENT, then=1),
+                    default=0,
+                    output_field=models.IntegerField(),
+                ),
+                "due_date",
+                "-issued_date",
+                "-created_at",
+            )
+        )
+        return Response(AdminInvoiceSerializer(invoices, many=True).data)
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class AdminInvoiceSendView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def post(self, request, invoice_id):
+        invoice = get_object_or_404(
+            Invoice.objects.select_related("customer", "service__memorial__plot__cemetery").prefetch_related("items"),
+            id=invoice_id,
+        )
+        serializer = AdminSendInvoiceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        if not invoice.customer.email:
+            return Response({"detail": "This customer does not have an email address."}, status=status.HTTP_400_BAD_REQUEST)
+        if invoice.status == Invoice.Status.PAID:
+            return Response({"detail": "This invoice has already been paid."}, status=status.HTTP_400_BAD_REQUEST)
+        if invoice.total_amount <= 0:
+            return Response({"detail": "Invoice total must be greater than zero before sending."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if "notes" in serializer.validated_data:
+            invoice.notes = serializer.validated_data.get("notes", "")
+        if "due_date" in serializer.validated_data:
+            invoice.due_date = serializer.validated_data.get("due_date")
+        if not invoice.issued_date:
+            invoice.issued_date = timezone.localdate()
+        invoice.status = Invoice.Status.SENT
+
+        try:
+            session = _create_checkout_session_for_invoice(
+                request,
+                invoice=invoice,
+                customer_email=invoice.customer.email,
+            )
+        except stripe_client.StripeAPIError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        checkout_url = session.get("url", "")
+        replacements = build_invoice_template_replacements(invoice=invoice, checkout_url=checkout_url)
+        subject_template = serializer.validated_data.get("subject") or DEFAULT_INVOICE_SUBJECT
+        body_template = serializer.validated_data.get("body") or DEFAULT_INVOICE_BODY
+        rendered_subject = render_customer_template(subject_template, replacements=replacements)
+        rendered_body = render_customer_template(body_template, replacements=replacements)
+        from_email = resolve_from_email(purpose="panel")
+
+        try:
+            send_email(
+                subject=rendered_subject,
+                text_body=rendered_body,
+                from_email=from_email,
+                recipient_list=[invoice.customer.email],
+                purpose="panel",
+                reply_to=[settings.EMAIL_DEFAULT_REPLY_TO] if getattr(settings, "EMAIL_DEFAULT_REPLY_TO", "") else [],
+                metadata={
+                    "flow": "invoice_send",
+                    "invoice_id": invoice.id,
+                    "stripe_checkout_session_id": session.get("id", ""),
+                },
+            )
+        except EmailDeliveryError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        invoice.save(update_fields=["status", "issued_date", "due_date", "notes", "updated_at"])
+        return Response(
+            {
+                "ok": True,
+                "invoice": AdminInvoiceSerializer(invoice).data,
+                "checkout_url": checkout_url,
+                "sent_to": invoice.customer.email,
+                "subject": rendered_subject,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 def _build_checkout_urls(request):
     origin = request.headers.get("Origin", "").rstrip("/")
     if origin:
@@ -976,6 +1558,31 @@ def _build_checkout_urls(request):
         cancel_url = f"{origin}/?checkout=canceled#/customer/settings"
 
     return success_url, cancel_url
+
+
+def _create_checkout_session_for_invoice(request, *, invoice: Invoice, customer_email: str):
+    success_url, cancel_url = _build_checkout_urls(request)
+    session = stripe_client.create_checkout_session(
+        invoice=invoice,
+        customer_email=customer_email,
+        success_url=success_url,
+        cancel_url=cancel_url,
+    )
+
+    invoice.stripe_checkout_session_id = session.get("id", "")
+    invoice.save(update_fields=["stripe_checkout_session_id", "updated_at"])
+    Payment.objects.update_or_create(
+        invoice=invoice,
+        stripe_checkout_session_id=session.get("id", ""),
+        defaults={
+            "provider": Payment.Provider.STRIPE,
+            "method": Payment.Method.CARD,
+            "status": Payment.Status.PENDING,
+            "currency": invoice.currency,
+            "amount": invoice.total_amount,
+        },
+    )
+    return session
 
 
 def _sync_checkout_session(session, invoice: Invoice):
@@ -1060,31 +1667,14 @@ class CreateCheckoutSessionView(APIView):
         if invoice.status == Invoice.Status.PAID:
             return Response({"detail": "This invoice has already been paid."}, status=status.HTTP_400_BAD_REQUEST)
 
-        success_url, cancel_url = _build_checkout_urls(request)
-
         try:
-            session = stripe_client.create_checkout_session(
+            session = _create_checkout_session_for_invoice(
+                request,
                 invoice=invoice,
                 customer_email=serializer.validated_data["customer_email"],
-                success_url=success_url,
-                cancel_url=cancel_url,
             )
         except stripe_client.StripeAPIError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
-
-        invoice.stripe_checkout_session_id = session.get("id", "")
-        invoice.save(update_fields=["stripe_checkout_session_id", "updated_at"])
-        Payment.objects.update_or_create(
-            invoice=invoice,
-            stripe_checkout_session_id=session.get("id", ""),
-            defaults={
-                "provider": Payment.Provider.STRIPE,
-                "method": Payment.Method.CARD,
-                "status": Payment.Status.PENDING,
-                "currency": invoice.currency,
-                "amount": invoice.total_amount,
-            },
-        )
 
         return Response(
             {
@@ -1213,7 +1803,10 @@ class EmployeeCreateView(APIView):
                 )
 
         if invite:
-            invite_url = send_employee_invite_email(request, invite)
+            try:
+                invite_url = send_employee_invite_email(request, invite)
+            except EmailDeliveryError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
         return Response(
             {
@@ -1253,7 +1846,10 @@ class EmployeeInviteResendView(APIView):
             invited_email=invited_email,
             created_by=request.user if getattr(request.user, "is_authenticated", False) else None,
         )
-        invite_url = send_employee_invite_email(request, invite)
+        try:
+            invite_url = send_employee_invite_email(request, invite)
+        except EmailDeliveryError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         return Response(
             {
                 "ok": True,
@@ -1376,6 +1972,76 @@ class MemorialListView(APIView):
         return Response(MemorialSummarySerializer(qs, many=True).data)
 
 
+@method_decorator(csrf_exempt, name="dispatch")
+class MemorialManageListCreateView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def get(self, request):
+        qs = (
+            Memorial.objects.select_related("customer", "plot__cemetery")
+            .annotate(
+                last_service_status=models.Subquery(
+                    Service.objects.filter(memorial=models.OuterRef("pk"))
+                    .order_by("-completed_date", "-created_at")
+                    .values("status")[:1]
+                ),
+                last_service_date=models.Subquery(
+                    Service.objects.filter(memorial=models.OuterRef("pk"))
+                    .order_by("-completed_date", "-created_at")
+                    .values("completed_date")[:1]
+                ),
+            )
+            .order_by("customer__full_name", "plot__cemetery__name", "plot__section", "plot__row", "plot__plot_number")
+        )
+        return Response(MemorialSummarySerializer(qs, many=True).data)
+
+    def post(self, request):
+        serializer = MemorialCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        customer = get_object_or_404(Customer, id=serializer.validated_data["customer_id"])
+        cemetery = get_object_or_404(Cemetery, id=serializer.validated_data["cemetery_id"])
+
+        with transaction.atomic():
+            plot, _ = Plot.objects.get_or_create(
+                cemetery=cemetery,
+                section=serializer.validated_data["section"],
+                row=serializer.validated_data["row"],
+                plot_number=serializer.validated_data["plot_number"],
+            )
+            memorial = Memorial.objects.create(
+                customer=customer,
+                plot=plot,
+                material=serializer.validated_data.get("material", Memorial.Material.OTHER),
+                inscription_text=serializer.validated_data.get("inscription_text", ""),
+                condition_summary=serializer.validated_data.get("condition_summary", ""),
+                notes=serializer.validated_data.get("notes", ""),
+            )
+
+        memorial_payload = (
+            Memorial.objects.filter(id=memorial.id)
+            .select_related("customer", "plot__cemetery")
+            .annotate(
+                last_service_status=models.Subquery(
+                    Service.objects.filter(memorial=models.OuterRef("pk"))
+                    .order_by("-completed_date", "-created_at")
+                    .values("status")[:1]
+                ),
+                last_service_date=models.Subquery(
+                    Service.objects.filter(memorial=models.OuterRef("pk"))
+                    .order_by("-completed_date", "-created_at")
+                    .values("completed_date")[:1]
+                ),
+            )
+            .first()
+        )
+        return Response(
+            {"ok": True, "memorial": MemorialSummarySerializer(memorial_payload).data},
+            status=status.HTTP_201_CREATED,
+        )
+
+
 class CustomerListView(APIView):
     permission_classes = [AllowAny]
 
@@ -1406,3 +2072,56 @@ class CemeteryListView(APIView):
             .order_by("name")
         )
         return Response(CemeterySummarySerializer(qs, many=True).data)
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class CemeteryManageListCreateView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def get(self, request):
+        qs = (
+            Cemetery.objects.annotate(
+                memorials_count=models.Count("plots__memorials", distinct=True),
+                active_services=models.Count(
+                    "plots__memorials__services",
+                    filter=models.Q(
+                        plots__memorials__services__status__in=[
+                            Service.Status.DRAFT,
+                            Service.Status.SCHEDULED,
+                            Service.Status.IN_PROGRESS,
+                        ]
+                    ),
+                    distinct=True,
+                ),
+            )
+            .order_by("name")
+        )
+        return Response(CemeterySummarySerializer(qs, many=True).data)
+
+    def post(self, request):
+        serializer = CemeteryUpsertSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        cemetery = serializer.save()
+        cemetery_payload = (
+            Cemetery.objects.filter(id=cemetery.id)
+            .annotate(
+                memorials_count=models.Count("plots__memorials", distinct=True),
+                active_services=models.Count(
+                    "plots__memorials__services",
+                    filter=models.Q(
+                        plots__memorials__services__status__in=[
+                            Service.Status.DRAFT,
+                            Service.Status.SCHEDULED,
+                            Service.Status.IN_PROGRESS,
+                        ]
+                    ),
+                    distinct=True,
+                ),
+            )
+            .first()
+        )
+        return Response(
+            {"ok": True, "cemetery": CemeterySummarySerializer(cemetery_payload).data},
+            status=status.HTTP_201_CREATED,
+        )

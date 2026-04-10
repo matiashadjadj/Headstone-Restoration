@@ -13,6 +13,7 @@ const ROLE_CONFIGS = {
       { id: 'customers', label: 'Customers', to: '/admin/customers' },
       { id: 'cemeteries', label: 'Cemeteries', to: '/admin/cemeteries' },
       { id: 'archive', label: 'Photos & Archive', to: '/admin/archive' },
+      { id: 'invoices', label: 'Invoices', to: '/admin/invoices' },
       { id: 'emails', label: 'Emails', to: '/admin/emails' },
       { id: 'reports', label: 'Reports', to: '/admin/reports' },
       { id: 'settings', label: 'Settings', to: '/admin/settings' }
@@ -127,6 +128,24 @@ function formatDateTimeShort(value) {
     hour: 'numeric',
     minute: '2-digit'
   });
+}
+
+function copyTextToClipboard(value) {
+  const text = String(value || '');
+  if (!text) return Promise.reject(new Error('Nothing to copy.'));
+  if (navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(text);
+  }
+  const input = document.createElement('textarea');
+  input.value = text;
+  input.setAttribute('readonly', 'readonly');
+  input.style.position = 'absolute';
+  input.style.left = '-9999px';
+  document.body.appendChild(input);
+  input.select();
+  document.execCommand('copy');
+  document.body.removeChild(input);
+  return Promise.resolve();
 }
 
 function formatDateOnly(value) {
@@ -380,6 +399,7 @@ const ROUTES = {
     customers: CustomersPage,
     cemeteries: CemeteriesPage,
     archive: ArchivePage,
+    invoices: AdminInvoicesPage,
     emails: EmailsPage,
     reports: ReportsPage,
     settings: SettingsPage,
@@ -419,6 +439,7 @@ function getServiceTypeLabel(service) {
 
 const LOGIN_PATH = '/login';
 const SETUP_PASSWORD_PATH = '/setup-password';
+const PUBLIC_SURVEY_PREFIX = '/survey/';
 
 function getDefaultPathForRole(role) {
   const config = ROLE_CONFIGS[role] || ROLE_CONFIGS.admin;
@@ -426,8 +447,15 @@ function getDefaultPathForRole(role) {
 }
 
 function getInviteToken() {
-  const params = new URLSearchParams(window.location.search || '');
-  return (params.get('invite') || '').trim();
+  const searchParams = new URLSearchParams(window.location.search || '');
+  const directToken = (searchParams.get('invite') || '').trim();
+  if (directToken) return directToken;
+
+  const hash = String(window.location.hash || '');
+  const hashQueryIndex = hash.indexOf('?');
+  if (hashQueryIndex === -1) return '';
+  const hashParams = new URLSearchParams(hash.slice(hashQueryIndex + 1));
+  return (hashParams.get('invite') || '').trim();
 }
 
 function getSchedulingPathForCurrentRole() {
@@ -505,6 +533,16 @@ function parseRoute(path, role) {
       page: 'setup-password',
       config: null,
       canonicalPath: SETUP_PASSWORD_PATH
+    };
+  }
+  if (normalized.startsWith(PUBLIC_SURVEY_PREFIX)) {
+    const surveyToken = normalized.slice(PUBLIC_SURVEY_PREFIX.length).split('/').filter(Boolean)[0] || '';
+    return {
+      role: null,
+      page: 'public-survey',
+      config: null,
+      canonicalPath: surveyToken ? `${PUBLIC_SURVEY_PREFIX}${surveyToken}` : PUBLIC_SURVEY_PREFIX,
+      surveyToken
     };
   }
 
@@ -647,44 +685,426 @@ function DashboardPage() {
   );
 }
 
+function PublicSurveyPage({ surveyToken }) {
+  const [surveyState, setSurveyState] = useState({ loading: true, error: '', data: null });
+  const [submitState, setSubmitState] = useState({ loading: false, error: '', success: '' });
+  const [form, setForm] = useState({
+    customer_name: '',
+    email: '',
+    phone: '',
+    cemetery_name: '',
+    cemetery_address: '',
+    section: '',
+    row: '',
+    plot_number: '',
+    grave_number: '',
+    gps_lat: '',
+    gps_lng: '',
+    locating_notes: '',
+    extra_notes: '',
+    photo: null
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSurvey() {
+      if (!surveyToken) {
+        setSurveyState({ loading: false, error: 'Survey link is missing a token.', data: null });
+        return;
+      }
+
+      try {
+        const res = await apiFetch(`/public/surveys/${encodeURIComponent(surveyToken)}/`);
+        let payload = null;
+        try {
+          payload = await res.json();
+        } catch (error) {
+          payload = null;
+        }
+        if (!res.ok) throw new Error(formatApiError(payload, `Survey lookup failed (${res.status})`));
+        if (!cancelled) setSurveyState({ loading: false, error: '', data: payload });
+      } catch (err) {
+        if (!cancelled) setSurveyState({ loading: false, error: err.message || 'Failed to load survey.', data: null });
+      }
+    }
+
+    loadSurvey();
+    return () => { cancelled = true; };
+  }, [surveyToken]);
+
+  function updateField(name, value) {
+    setForm((prev) => ({ ...prev, [name]: value }));
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setSubmitState({ loading: true, error: '', success: '' });
+
+    const latValue = String(form.gps_lat || '').trim();
+    const lngValue = String(form.gps_lng || '').trim();
+    if ((latValue && !lngValue) || (!latValue && lngValue)) {
+      setSubmitState({ loading: false, error: 'Enter both GPS fields or leave both blank.', success: '' });
+      return;
+    }
+
+    let gpsLat = '';
+    let gpsLng = '';
+    if (latValue && lngValue) {
+      const parsedLat = parseCoordinate(latValue, 'lat');
+      const parsedLng = parseCoordinate(lngValue, 'lng');
+      if (!parsedLat.ok || !parsedLng.ok) {
+        setSubmitState({
+          loading: false,
+          error: parsedLat.error || parsedLng.error || 'Invalid GPS coordinates.',
+          success: ''
+        });
+        return;
+      }
+      gpsLat = String(parsedLat.value);
+      gpsLng = String(parsedLng.value);
+    }
+
+    const payload = new FormData();
+    Object.entries(form).forEach(([key, value]) => {
+      if (key === 'photo') return;
+      payload.append(key, value == null ? '' : String(value));
+    });
+    payload.set('gps_lat', gpsLat);
+    payload.set('gps_lng', gpsLng);
+    if (form.photo) payload.append('photo', form.photo);
+
+    try {
+      const res = await apiFetch(`/public/surveys/${encodeURIComponent(surveyToken)}/`, {
+        method: 'POST',
+        body: payload
+      });
+      let json = null;
+      try {
+        json = await res.json();
+      } catch (error) {
+        json = null;
+      }
+      if (!res.ok) throw new Error(formatApiError(json, `Submit failed (${res.status})`));
+      setSurveyState((prev) => ({
+        loading: false,
+        error: '',
+        data: prev.data
+          ? { ...prev.data, status: 'submitted', submitted_at: json.submitted_at || new Date().toISOString() }
+          : prev.data
+      }));
+      setSubmitState({ loading: false, error: '', success: 'Your information has been submitted.' });
+    } catch (err) {
+      setSubmitState({ loading: false, error: err.message || 'Failed to submit survey.', success: '' });
+    }
+  }
+
+  const survey = surveyState.data;
+  const isSubmitted = survey?.status === 'submitted';
+
+  return (
+    <div className="public-page-shell">
+      <div className="public-page-card">
+        <div className="public-page-header">
+          <span className="tag">Headstone Restoration</span>
+          <h1 className="page-title">Customer Survey</h1>
+          <p className="page-subtitle">Please share the location details for this headstone. No login is required.</p>
+        </div>
+
+        {surveyState.loading && <p className="meta">Loading survey...</p>}
+        {surveyState.error && <div className="form-error">{surveyState.error}</div>}
+
+        {!surveyState.loading && !surveyState.error && survey && (
+          <>
+            <div className="public-survey-summary">
+              <div>
+                <strong>Job</strong>
+                <span>{survey.service_name || 'Service'}</span>
+              </div>
+              <div>
+                <strong>Cemetery</strong>
+                <span>{survey.cemetery_name || 'Not provided yet'}</span>
+              </div>
+              <div>
+                <strong>Status</strong>
+                <span>{survey.status || 'pending'}</span>
+              </div>
+            </div>
+
+            {isSubmitted ? (
+              <div className="card form-success">
+                <strong>Survey already submitted.</strong>
+                <p className="meta">Submitted {formatDateTimeShort(survey.submitted_at)}.</p>
+              </div>
+            ) : (
+              <form className="form" onSubmit={handleSubmit}>
+                <label>Name</label>
+                <input value={form.customer_name} onChange={(event) => updateField('customer_name', event.target.value)} required />
+
+                <div className="field-row">
+                  <div>
+                    <label>Email</label>
+                    <input type="email" value={form.email} onChange={(event) => updateField('email', event.target.value)} />
+                  </div>
+                  <div>
+                    <label>Phone</label>
+                    <input value={form.phone} onChange={(event) => updateField('phone', event.target.value)} />
+                  </div>
+                </div>
+
+                <label>Cemetery Name</label>
+                <input value={form.cemetery_name} onChange={(event) => updateField('cemetery_name', event.target.value)} />
+
+                <label>Cemetery Address</label>
+                <input value={form.cemetery_address} onChange={(event) => updateField('cemetery_address', event.target.value)} />
+
+                <div className="field-row field-row-4">
+                  <div>
+                    <label>Section</label>
+                    <input value={form.section} onChange={(event) => updateField('section', event.target.value)} />
+                  </div>
+                  <div>
+                    <label>Row</label>
+                    <input value={form.row} onChange={(event) => updateField('row', event.target.value)} />
+                  </div>
+                  <div>
+                    <label>Plot</label>
+                    <input value={form.plot_number} onChange={(event) => updateField('plot_number', event.target.value)} />
+                  </div>
+                  <div>
+                    <label>Grave #</label>
+                    <input value={form.grave_number} onChange={(event) => updateField('grave_number', event.target.value)} />
+                  </div>
+                </div>
+
+                <div className="field-row">
+                  <div>
+                    <label>GPS Latitude</label>
+                    <input value={form.gps_lat} onChange={(event) => updateField('gps_lat', event.target.value)} placeholder="40.730610" />
+                  </div>
+                  <div>
+                    <label>GPS Longitude</label>
+                    <input value={form.gps_lng} onChange={(event) => updateField('gps_lng', event.target.value)} placeholder="-73.935242" />
+                  </div>
+                </div>
+                <p className="meta">Enter both GPS fields together if you have them.</p>
+
+                <label>Notes For Finding The Headstone</label>
+                <textarea rows="4" value={form.locating_notes} onChange={(event) => updateField('locating_notes', event.target.value)} />
+
+                <label>Extra Notes</label>
+                <textarea rows="4" value={form.extra_notes} onChange={(event) => updateField('extra_notes', event.target.value)} />
+
+                <label>Optional Photo</label>
+                <input type="file" accept="image/*" onChange={(event) => updateField('photo', event.target.files?.[0] || null)} />
+
+                {submitState.error && <div className="form-error">{submitState.error}</div>}
+                {submitState.success && <div className="card form-success"><strong>{submitState.success}</strong></div>}
+                <button className="primary-btn" type="submit" disabled={submitState.loading}>
+                  {submitState.loading ? 'Submitting...' : 'Submit Information'}
+                </button>
+              </form>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function MemorialsPage() {
-  const { loading, error, data } = useApi('/memorials/', []);
+  const memorialState = useApi('/manage/memorials/', [], true, { refreshEvent: 'hs:memorials-updated' });
+  const customerState = useApi('/manage/customers/', [], true, { refreshEvent: 'hs:customers-updated' });
+  const cemeteryState = useApi('/cemeteries/', []);
+  const [memorials, setMemorials] = useState([]);
+  const [form, setForm] = useState({
+    customer_id: '',
+    cemetery_id: '',
+    section: '',
+    row: '',
+    plot_number: '',
+    material: 'other',
+    notes: ''
+  });
+  const [saveState, setSaveState] = useState({ loading: false, error: '', success: '' });
+
+  useEffect(() => {
+    setMemorials(Array.isArray(memorialState.data) ? memorialState.data : []);
+  }, [memorialState.data]);
+
+  async function handleCreate(event) {
+    event.preventDefault();
+    setSaveState({ loading: true, error: '', success: '' });
+    try {
+      const res = await apiFetch('/manage/memorials/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_id: Number(form.customer_id),
+          cemetery_id: Number(form.cemetery_id),
+          section: form.section,
+          row: form.row,
+          plot_number: form.plot_number,
+          material: form.material,
+          notes: form.notes
+        })
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(formatApiError(json, `Create failed (${res.status})`));
+      setMemorials((prev) => [...prev, json.memorial].sort((a, b) => String(a.customer || '').localeCompare(String(b.customer || ''))));
+      setForm({
+        customer_id: '',
+        cemetery_id: '',
+        section: '',
+        row: '',
+        plot_number: '',
+        material: 'other',
+        notes: ''
+      });
+      setSaveState({ loading: false, error: '', success: 'Memorial created.' });
+      window.dispatchEvent(new Event('hs:memorials-updated'));
+    } catch (err) {
+      setSaveState({ loading: false, error: err.message || 'Failed to create memorial.', success: '' });
+    }
+  }
 
   return (
     <>
       <h1 className="page-title">Memorials</h1>
       <p className="page-subtitle">Permanent records of restored and maintained memorials.</p>
 
-      {error && <div className="card warn">Backend error: {error}</div>}
+      {(memorialState.error || customerState.error || cemeteryState.error) && (
+        <div className="card warn">Backend error: {memorialState.error || customerState.error || cemeteryState.error}</div>
+      )}
 
-      <div className="card">
-        <table>
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h3>Create Memorial</h3>
+              <p className="meta">Add a memorial by selecting the customer, cemetery, and plot location.</p>
+            </div>
+          </div>
+          <form className="form" onSubmit={handleCreate}>
+            <label>Customer</label>
+            <select
+              value={form.customer_id}
+              onChange={(event) => setForm((prev) => ({ ...prev, customer_id: event.target.value }))}
+              required
+            >
+              <option value="">Select customer</option>
+              {(customerState.data || []).map((customer) => (
+                <option key={customer.id} value={customer.id}>
+                  #{customer.id} · {customer.full_name}
+                </option>
+              ))}
+            </select>
+
+            <label>Cemetery</label>
+            <select
+              value={form.cemetery_id}
+              onChange={(event) => setForm((prev) => ({ ...prev, cemetery_id: event.target.value }))}
+              required
+            >
+              <option value="">Select cemetery</option>
+              {(cemeteryState.data || []).map((cemetery) => (
+                <option key={cemetery.id} value={cemetery.id}>
+                  #{cemetery.id} · {cemetery.name}
+                </option>
+              ))}
+            </select>
+
+            <div className="field-row">
+              <div>
+                <label>Section</label>
+                <input
+                  type="text"
+                  value={form.section}
+                  onChange={(event) => setForm((prev) => ({ ...prev, section: event.target.value }))}
+                  required
+                />
+              </div>
+              <div>
+                <label>Row</label>
+                <input
+                  type="text"
+                  value={form.row}
+                  onChange={(event) => setForm((prev) => ({ ...prev, row: event.target.value }))}
+                  required
+                />
+              </div>
+            </div>
+
+            <label>Plot Number</label>
+            <input
+              type="text"
+              value={form.plot_number}
+              onChange={(event) => setForm((prev) => ({ ...prev, plot_number: event.target.value }))}
+              required
+            />
+
+            <label>Material</label>
+            <select
+              value={form.material}
+              onChange={(event) => setForm((prev) => ({ ...prev, material: event.target.value }))}
+            >
+              <option value="granite">Granite</option>
+              <option value="marble">Marble</option>
+              <option value="limestone">Limestone</option>
+              <option value="sandstone">Sandstone</option>
+              <option value="bronze">Bronze</option>
+              <option value="other">Other</option>
+            </select>
+
+            <label>Notes</label>
+            <textarea
+              value={form.notes}
+              onChange={(event) => setForm((prev) => ({ ...prev, notes: event.target.value }))}
+              rows={4}
+              style={{ padding: '10px', borderRadius: '8px', border: '1px solid #e5e7eb' }}
+            />
+
+            {saveState.error && <div className="form-error">{saveState.error}</div>}
+            {saveState.success && <div className="card form-success"><strong>{saveState.success}</strong></div>}
+            <button className="primary-btn" type="submit" disabled={saveState.loading}>
+              {saveState.loading ? 'Creating...' : 'Create Memorial'}
+            </button>
+          </form>
+        </div>
+
+        <div className="card">
+          <table>
           <thead>
             <tr>
               <th>Customer</th>
               <th>Cemetery</th>
+              <th>Plot</th>
+              <th>Material</th>
               <th>Last Service</th>
               <th>Status</th>
             </tr>
           </thead>
           <tbody>
-            {loading && (
-              <tr><td colSpan="4" className="meta">Loading...</td></tr>
+            {memorialState.loading && (
+              <tr><td colSpan="6" className="meta">Loading...</td></tr>
             )}
-            {!loading && data.length === 0 && (
-              <tr><td colSpan="4" className="meta">No memorials yet.</td></tr>
+            {!memorialState.loading && memorials.length === 0 && (
+              <tr><td colSpan="6" className="meta">No memorials yet.</td></tr>
             )}
-            {!loading && data.map((row) => (
+            {!memorialState.loading && memorials.map((row) => (
               <tr key={row.id}>
                 <td>{row.customer}</td>
                 <td>{row.cemetery || '—'}</td>
+                <td>{[row.section, row.row, row.plot_number].filter(Boolean).join(' / ') || '—'}</td>
+                <td>{row.material || '—'}</td>
                 <td>{row.last_service_date || '—'}</td>
                 <td><span className="tag">{row.last_service_status || 'N/A'}</span></td>
               </tr>
             ))}
           </tbody>
-        </table>
-      </div>
+          </table>
+        </div>
+      </section>
     </>
   );
 }
@@ -692,6 +1112,7 @@ function MemorialsPage() {
 function SchedulingPage() {
   const servicesState = useApi('/scheduling/services/', []);
   const techState = useApi('/technicians/', []);
+  const customerState = useApi('/customers/', []);
   const memorialState = useApi('/memorials/', []);
   const serviceOptionsState = useApi('/service-options/', [], true, { refreshEvent: 'hs:service-options-updated' });
 
@@ -704,12 +1125,22 @@ function SchedulingPage() {
   const [calendarDate, setCalendarDate] = useState(getStoredSchedulingDate);
   const [submitState, setSubmitState] = useState({ loading: false, error: '', success: '' });
   const [completeState, setCompleteState] = useState({ loading: false, error: '', success: '' });
+  const [createCustomerId, setCreateCustomerId] = useState('');
   const [createMemorialId, setCreateMemorialId] = useState('');
   const [createServiceOptionId, setCreateServiceOptionId] = useState('');
-  const [createInitialPrice, setCreateInitialPrice] = useState('');
+  const [createInfoMode, setCreateInfoMode] = useState('manual');
+  const [createCemeteryName, setCreateCemeteryName] = useState('');
+  const [createCemeteryAddress, setCreateCemeteryAddress] = useState('');
+  const [createSection, setCreateSection] = useState('');
+  const [createRow, setCreateRow] = useState('');
+  const [createPlotNumber, setCreatePlotNumber] = useState('');
   const [createGpsLat, setCreateGpsLat] = useState('');
   const [createGpsLng, setCreateGpsLng] = useState('');
+  const [createLocatingNotes, setCreateLocatingNotes] = useState('');
+  const [createCustomerNotes, setCreateCustomerNotes] = useState('');
   const [createState, setCreateState] = useState({ loading: false, error: '', success: '' });
+  const [surveyState, setSurveyState] = useState({ loading: false, error: '', data: null });
+  const [surveyActionState, setSurveyActionState] = useState({ loading: false, error: '', success: '' });
 
   useEffect(() => {
     setServices(Array.isArray(servicesState.data) ? servicesState.data : []);
@@ -772,11 +1203,19 @@ function SchedulingPage() {
   }
 
   function resetCreateForm() {
+    setCreateCustomerId('');
     setCreateMemorialId('');
     setCreateServiceOptionId('');
-    setCreateInitialPrice('');
+    setCreateInfoMode('manual');
+    setCreateCemeteryName('');
+    setCreateCemeteryAddress('');
+    setCreateSection('');
+    setCreateRow('');
+    setCreatePlotNumber('');
     setCreateGpsLat('');
     setCreateGpsLng('');
+    setCreateLocatingNotes('');
+    setCreateCustomerNotes('');
     setCreateState({ loading: false, error: '', success: '' });
   }
 
@@ -833,57 +1272,55 @@ function SchedulingPage() {
   async function handleCreateJob(event) {
     event.preventDefault();
     setCreateState({ loading: true, error: '', success: '' });
-    if (!createMemorialId) {
-      setCreateState({ loading: false, error: 'Select a memorial.', success: '' });
+    if (!createCustomerId) {
+      setCreateState({ loading: false, error: 'Select a customer.', success: '' });
       return;
     }
     if (!createServiceOptionId) {
       setCreateState({ loading: false, error: 'Select a service.', success: '' });
       return;
     }
-    const createPriceValue = createInitialPrice.trim();
-    let initialPrice = null;
-    if (createPriceValue) {
-      const parsed = Number(createPriceValue);
-      if (!Number.isFinite(parsed) || parsed < 0) {
-        setCreateState({ loading: false, error: 'Enter a valid non-negative initial price.', success: '' });
-        return;
-      }
-      initialPrice = Number(parsed.toFixed(2));
-    }
-    const latValue = createGpsLat.trim();
-    const lngValue = createGpsLng.trim();
-    if ((latValue && !lngValue) || (!latValue && lngValue)) {
-      setCreateState({ loading: false, error: 'Enter both GPS fields or leave both blank.', success: '' });
-      return;
-    }
-    let gpsLat = null;
-    let gpsLng = null;
-    if (latValue && lngValue) {
-      const parsedLat = parseCoordinate(latValue, 'lat');
-      const parsedLng = parseCoordinate(lngValue, 'lng');
-      if (!parsedLat.ok || !parsedLng.ok) {
-        setCreateState({
-          loading: false,
-          error: parsedLat.error || parsedLng.error || 'Invalid GPS coordinates.',
-          success: ''
-        });
-        return;
-      }
-      gpsLat = parsedLat.value;
-      gpsLng = parsedLng.value;
-    }
-
+    const shouldSendSurvey = createInfoMode === 'survey';
     try {
+      const latValue = createGpsLat.trim();
+      const lngValue = createGpsLng.trim();
+      if (createInfoMode === 'manual' && ((latValue && !lngValue) || (!latValue && lngValue))) {
+        setCreateState({ loading: false, error: 'Enter both GPS fields or leave both blank.', success: '' });
+        return;
+      }
+      let gpsLat = null;
+      let gpsLng = null;
+      if (createInfoMode === 'manual' && latValue && lngValue) {
+        const parsedLat = parseCoordinate(latValue, 'lat');
+        const parsedLng = parseCoordinate(lngValue, 'lng');
+        if (!parsedLat.ok || !parsedLng.ok) {
+          setCreateState({
+            loading: false,
+            error: parsedLat.error || parsedLng.error || 'Invalid GPS coordinates.',
+            success: ''
+          });
+          return;
+        }
+        gpsLat = parsedLat.value;
+        gpsLng = parsedLng.value;
+      }
       const res = await apiFetch('/scheduling/services/create/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          memorial_id: Number(createMemorialId),
+          customer_id: Number(createCustomerId),
+          memorial_id: createMemorialId ? Number(createMemorialId) : undefined,
           service_option_id: Number(createServiceOptionId),
-          initial_price: initialPrice,
-          gps_lat: gpsLat,
-          gps_lng: gpsLng
+          send_survey_email: shouldSendSurvey,
+          cemetery_name: shouldSendSurvey ? '' : createCemeteryName,
+          cemetery_address: shouldSendSurvey ? '' : createCemeteryAddress,
+          section: shouldSendSurvey ? '' : createSection,
+          row: shouldSendSurvey ? '' : createRow,
+          plot_number: shouldSendSurvey ? '' : createPlotNumber,
+          gps_lat: shouldSendSurvey ? null : gpsLat,
+          gps_lng: shouldSendSurvey ? null : gpsLng,
+          locating_notes: shouldSendSurvey ? '' : createLocatingNotes,
+          customer_notes: shouldSendSurvey ? '' : createCustomerNotes
         })
       });
       if (!res.ok) {
@@ -900,9 +1337,17 @@ function SchedulingPage() {
         setServices((prev) => [json.service, ...prev]);
         syncFormFromService(json.service.id);
       }
+      if (json.survey) {
+        setSurveyState({ loading: false, error: '', data: json.survey });
+      }
+      setSurveyActionState({ loading: false, error: '', success: '' });
       resetCreateForm();
       setShowCreateJobWindow(false);
-      setCreateState({ loading: false, error: '', success: 'Job created. It is ready for later assignment.' });
+      setCreateState({
+        loading: false,
+        error: '',
+        success: json.detail || 'Job created and survey sent to the customer.'
+      });
     } catch (err) {
       setCreateState({ loading: false, error: err.message || 'Failed to create job.', success: '' });
     }
@@ -957,6 +1402,36 @@ function SchedulingPage() {
     [services]
   );
 
+  const memorialOptions = useMemo(
+    () => (Array.isArray(memorialState.data) ? memorialState.data : []),
+    [memorialState.data]
+  );
+
+  const customerOptions = useMemo(
+    () => (Array.isArray(customerState.data) ? customerState.data : []),
+    [customerState.data]
+  );
+
+  const memorialsForCreateCustomer = useMemo(
+    () => memorialOptions.filter((memorial) => String(memorial.customer_id) === String(createCustomerId)),
+    [memorialOptions, createCustomerId]
+  );
+
+  useEffect(() => {
+    if (!createCustomerId) {
+      if (createMemorialId) setCreateMemorialId('');
+      return;
+    }
+    if (memorialsForCreateCustomer.length === 1) {
+      const onlyMemorialId = String(memorialsForCreateCustomer[0].id);
+      if (createMemorialId !== onlyMemorialId) setCreateMemorialId(onlyMemorialId);
+      return;
+    }
+    if (!memorialsForCreateCustomer.some((memorial) => String(memorial.id) === String(createMemorialId))) {
+      setCreateMemorialId('');
+    }
+  }, [createCustomerId, createMemorialId, memorialsForCreateCustomer]);
+
   const schedulableServices = useMemo(
     () => services.filter((svc) => svc.status !== 'completed'),
     [services]
@@ -974,6 +1449,74 @@ function SchedulingPage() {
       syncFormFromService(schedulableServices[0].id, { resetState: false });
     }
   }, [selectedServiceId, schedulableServices]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSurveyDetail() {
+      if (!selectedServiceId) {
+        setSurveyState({ loading: false, error: '', data: null });
+        return;
+      }
+
+      setSurveyState((prev) => ({ loading: true, error: '', data: prev.data }));
+      try {
+        const res = await apiFetch(`/manage/services/${selectedServiceId}/survey/`);
+        const json = await res.json();
+        if (!res.ok) throw new Error(formatApiError(json, `Survey lookup failed (${res.status})`));
+        if (!cancelled) setSurveyState({ loading: false, error: '', data: json });
+      } catch (err) {
+        if (!cancelled) setSurveyState({ loading: false, error: err.message || 'Failed to load survey status.', data: null });
+      }
+    }
+
+    loadSurveyDetail();
+    return () => { cancelled = true; };
+  }, [selectedServiceId]);
+
+  async function handleGenerateSurveyLink() {
+    if (!selectedServiceId) {
+      setSurveyActionState({ loading: false, error: 'Select a job first.', success: '' });
+      return;
+    }
+
+    setSurveyActionState({ loading: true, error: '', success: '' });
+    try {
+      const res = await apiFetch(`/manage/services/${selectedServiceId}/survey/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(formatApiError(json, `Survey link failed (${res.status})`));
+      setSurveyState({ loading: false, error: '', data: json });
+      if (json.service) {
+        setServices((prev) => prev.map((item) => (item.id === json.service.id ? json.service : item)));
+      }
+      setSurveyActionState({
+        loading: false,
+        error: '',
+        success: json.detail || (json.request?.status === 'submitted' ? 'Survey was already submitted.' : 'Survey sent.')
+      });
+    } catch (err) {
+      setSurveyActionState({ loading: false, error: err.message || 'Failed to generate survey link.', success: '' });
+    }
+  }
+
+  async function handleCopySurveyLink() {
+    const publicUrl = surveyState.data?.public_url || '';
+    try {
+      await copyTextToClipboard(publicUrl);
+      setSurveyActionState({ loading: false, error: '', success: 'Survey link copied.' });
+    } catch (err) {
+      setSurveyActionState({ loading: false, error: err.message || 'Failed to copy survey link.', success: '' });
+    }
+  }
+
+  const surveyDetail = surveyState.data;
+  const surveyRequest = surveyDetail?.request || null;
+  const surveySubmission = surveyDetail?.submission || null;
+  const surveyStatus = selectedService?.survey_status || surveyRequest?.status || 'not_sent';
 
   return (
     <>
@@ -994,9 +1537,9 @@ function SchedulingPage() {
         </button>
       </div>
 
-      {(servicesState.error || techState.error || memorialState.error || serviceOptionsState.error) && (
+      {(servicesState.error || techState.error || customerState.error || memorialState.error || serviceOptionsState.error) && (
         <div className="card warn">
-          Backend error: {servicesState.error || techState.error || memorialState.error || serviceOptionsState.error}
+          Backend error: {servicesState.error || techState.error || customerState.error || memorialState.error || serviceOptionsState.error}
         </div>
       )}
 
@@ -1205,6 +1748,100 @@ function SchedulingPage() {
         </div>
       </section>
 
+      <section className="grid-2">
+        <div className="card">
+              <div className="card-header">
+            <div>
+              <h3>Customer Survey</h3>
+              <p className="meta">Send or resend the customer survey from here when you want to collect details by email.</p>
+            </div>
+          </div>
+          {!selectedService && <p className="meta">Select a job to review or resend its customer survey.</p>}
+          {selectedService && (
+            <>
+              <div className="survey-status-grid">
+                <div className="survey-status-item">
+                  <strong>Status</strong>
+                  <span className="tag">{surveyStatus}</span>
+                </div>
+                <div className="survey-status-item">
+                  <strong>Sent</strong>
+                  <span>{surveyRequest?.sent_at ? formatDateTimeShort(surveyRequest.sent_at) : 'Not sent'}</span>
+                </div>
+                <div className="survey-status-item">
+                  <strong>Expires</strong>
+                  <span>{surveyRequest?.expires_at ? formatDateTimeShort(surveyRequest.expires_at) : '—'}</span>
+                </div>
+                <div className="survey-status-item">
+                  <strong>Submitted</strong>
+                  <span>{surveyRequest?.submitted_at ? formatDateTimeShort(surveyRequest.submitted_at) : '—'}</span>
+                </div>
+              </div>
+
+              {surveyState.loading && <p className="meta">Loading survey details...</p>}
+              {surveyState.error && <div className="form-error">{surveyState.error}</div>}
+
+              {!surveyState.loading && (
+                <>
+                  <div className="survey-link-box">
+                    <label>Public Survey Link</label>
+                    <input type="text" value={surveyDetail?.public_url || ''} readOnly placeholder="Survey link will appear here after you send it" />
+                  </div>
+
+                  {surveyActionState.error && <div className="form-error">{surveyActionState.error}</div>}
+                  {surveyActionState.success && <div className="card form-success"><strong>{surveyActionState.success}</strong></div>}
+
+                  <div className="modal-actions">
+                    <button className="primary-btn" type="button" onClick={handleGenerateSurveyLink} disabled={surveyActionState.loading}>
+                      {surveyActionState.loading ? 'Working...' : surveyRequest ? 'Resend Survey Link' : 'Send Survey Link'}
+                    </button>
+                    <button
+                      className="ghost-btn"
+                      type="button"
+                      onClick={handleCopySurveyLink}
+                      disabled={!surveyDetail?.public_url}
+                    >
+                      Copy Link
+                    </button>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="card">
+              <div className="card-header">
+            <div>
+              <h3>Survey Review</h3>
+              <p className="meta">Customer-submitted data is applied to the system automatically after submission and is shown here for reference.</p>
+            </div>
+          </div>
+          {!selectedService && <p className="meta">Select a job to review any submitted survey data.</p>}
+          {selectedService && !surveySubmission && <p className="meta">No survey submission has been received for this job yet.</p>}
+          {selectedService && surveySubmission && (
+            <div className="survey-review-grid">
+              <div><strong>Name</strong><span>{surveySubmission.customer_name || '—'}</span></div>
+              <div><strong>Email</strong><span>{surveySubmission.email || '—'}</span></div>
+              <div><strong>Phone</strong><span>{surveySubmission.phone || '—'}</span></div>
+              <div><strong>Cemetery</strong><span>{surveySubmission.cemetery_name || '—'}</span></div>
+              <div><strong>Address</strong><span>{surveySubmission.cemetery_address || '—'}</span></div>
+              <div><strong>Plot</strong><span>{[surveySubmission.section, surveySubmission.row, surveySubmission.plot_number, surveySubmission.grave_number].filter(Boolean).join(' / ') || '—'}</span></div>
+              <div><strong>GPS</strong><span>{surveySubmission.gps_lat != null && surveySubmission.gps_lng != null ? `${surveySubmission.gps_lat}, ${surveySubmission.gps_lng}` : '—'}</span></div>
+              <div><strong>Submitted</strong><span>{formatDateTimeShort(surveySubmission.created_at)}</span></div>
+              <div className="survey-review-block"><strong>Locating Notes</strong><span>{surveySubmission.locating_notes || '—'}</span></div>
+              <div className="survey-review-block"><strong>Extra Notes</strong><span>{surveySubmission.extra_notes || '—'}</span></div>
+              {surveySubmission.photo_url && (
+                <div className="survey-review-block">
+                  <strong>Photo</strong>
+                  <a href={surveySubmission.photo_url} target="_blank" rel="noreferrer">Open uploaded photo</a>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </section>
+
       <div className="card">
         <h3>All Jobs</h3>
         <div className="table-scroll">
@@ -1220,14 +1857,15 @@ function SchedulingPage() {
                 <th>Technician</th>
                 <th>Price</th>
                 <th>GPS</th>
+                <th>Survey</th>
               </tr>
             </thead>
             <tbody>
               {servicesState.loading && (
-                <tr><td colSpan="9" className="meta">Loading jobs...</td></tr>
+                <tr><td colSpan="10" className="meta">Loading jobs...</td></tr>
               )}
               {!servicesState.loading && services.length === 0 && (
-                <tr><td colSpan="9" className="meta">No jobs found yet.</td></tr>
+                <tr><td colSpan="10" className="meta">No jobs found yet.</td></tr>
               )}
               {!servicesState.loading && services.map((svc) => (
                 <tr
@@ -1248,6 +1886,7 @@ function SchedulingPage() {
                       ? `${svc.gps_lat}, ${svc.gps_lng}`
                       : '—'}
                   </td>
+                  <td><span className="tag">{svc.survey_status || 'not_sent'}</span></td>
                 </tr>
               ))}
             </tbody>
@@ -1266,7 +1905,7 @@ function SchedulingPage() {
             <div className="card-header">
               <div>
                 <h3>Create Job</h3>
-                <p className="meta">Capture the core service info now. Assignment happens later.</p>
+                <p className="meta">Start from the customer, then choose whether to enter the location details now or send the customer a survey email.</p>
               </div>
               <button
                 type="button"
@@ -1281,19 +1920,48 @@ function SchedulingPage() {
             </div>
 
             <form className="form" onSubmit={handleCreateJob}>
-              <label>Memorial</label>
+              <label>Customer</label>
               <select
-                value={createMemorialId}
-                onChange={(event) => setCreateMemorialId(event.target.value)}
+                value={createCustomerId}
+                onChange={(event) => setCreateCustomerId(event.target.value)}
                 required
               >
-                <option value="">Select memorial</option>
-                {(memorialState.data || []).map((m) => (
-                  <option key={m.id} value={m.id}>
-                    #{m.id} · {m.customer || 'Customer'} · {m.cemetery || 'Cemetery'}
+                <option value="">Select customer</option>
+                {customerOptions.map((customer) => (
+                  <option key={customer.id} value={customer.id}>
+                    #{customer.id} · {customer.full_name} · {customer.memorials_count || 0} memorial(s)
                   </option>
                 ))}
               </select>
+
+              {createCustomerId && memorialsForCreateCustomer.length > 1 && (
+                <>
+                  <label>Memorial</label>
+                  <select
+                    value={createMemorialId}
+                    onChange={(event) => setCreateMemorialId(event.target.value)}
+                    required
+                  >
+                    <option value="">Select memorial</option>
+                    {memorialsForCreateCustomer.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        #{m.id} · {m.cemetery || 'Cemetery'}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="meta">This customer has multiple memorials, so pick which one this job belongs to.</p>
+                </>
+              )}
+
+              {createCustomerId && memorialsForCreateCustomer.length === 1 && (
+                <p className="meta">
+                  Memorial selected automatically: #{memorialsForCreateCustomer[0].id} · {memorialsForCreateCustomer[0].cemetery || 'Cemetery'}
+                </p>
+              )}
+
+              {createCustomerId && memorialsForCreateCustomer.length === 0 && (
+                <p className="meta">No memorial is on file yet. A temporary memorial record will be created and completed from the survey response.</p>
+              )}
 
               <label>Service</label>
               <select
@@ -1310,37 +1978,95 @@ function SchedulingPage() {
                 <p className="meta">No services are configured yet. Add them in Admin Settings.</p>
               )}
 
-              <label>Initial Price (USD)</label>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={createInitialPrice}
-                onChange={(event) => setCreateInitialPrice(event.target.value)}
-                placeholder="Optional"
-              />
+              <label>How do you want to collect details?</label>
+              <select
+                value={createInfoMode}
+                onChange={(event) => setCreateInfoMode(event.target.value)}
+              >
+                <option value="manual">Enter details manually</option>
+                <option value="survey">Send survey email</option>
+              </select>
 
-              <div className="field-row">
-                <div>
-                  <label>GPS Latitude</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. 40.730610"
-                    value={createGpsLat}
-                    onChange={(event) => setCreateGpsLat(event.target.value)}
+              {createInfoMode === 'manual' && (
+                <>
+                  <div className="field-row">
+                    <div>
+                      <label>Cemetery</label>
+                      <input
+                        value={createCemeteryName}
+                        onChange={(event) => setCreateCemeteryName(event.target.value)}
+                        placeholder="Oak Hill Cemetery"
+                      />
+                    </div>
+                    <div>
+                      <label>Cemetery Address</label>
+                      <input
+                        value={createCemeteryAddress}
+                        onChange={(event) => setCreateCemeteryAddress(event.target.value)}
+                        placeholder="123 Cemetery Rd"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="field-row">
+                    <div>
+                      <label>Section</label>
+                      <input value={createSection} onChange={(event) => setCreateSection(event.target.value)} placeholder="A" />
+                    </div>
+                    <div>
+                      <label>Row</label>
+                      <input value={createRow} onChange={(event) => setCreateRow(event.target.value)} placeholder="2" />
+                    </div>
+                    <div>
+                      <label>Plot</label>
+                      <input value={createPlotNumber} onChange={(event) => setCreatePlotNumber(event.target.value)} placeholder="14" />
+                    </div>
+                  </div>
+
+                  <div className="field-row">
+                    <div>
+                      <label>GPS Latitude</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 40.730610"
+                        value={createGpsLat}
+                        onChange={(event) => setCreateGpsLat(event.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label>GPS Longitude</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. -73.935242"
+                        value={createGpsLng}
+                        onChange={(event) => setCreateGpsLng(event.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <label>Location Notes</label>
+                  <textarea
+                    rows="3"
+                    value={createLocatingNotes}
+                    onChange={(event) => setCreateLocatingNotes(event.target.value)}
+                    placeholder="Near the oak tree, west side entrance, etc."
                   />
-                </div>
-                <div>
-                  <label>GPS Longitude</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. -73.935242"
-                    value={createGpsLng}
-                    onChange={(event) => setCreateGpsLng(event.target.value)}
+
+                  <label>Customer Notes</label>
+                  <textarea
+                    rows="3"
+                    value={createCustomerNotes}
+                    onChange={(event) => setCreateCustomerNotes(event.target.value)}
+                    placeholder="Anything the customer already told you about this job."
                   />
-                </div>
-              </div>
-              <p className="meta">Leave both GPS fields blank if the location is not available yet.</p>
+
+                  <p className="meta">Use manual entry when you already know the memorial location and customer notes.</p>
+                </>
+              )}
+
+              {createInfoMode === 'survey' && (
+                <p className="meta">The job will be created first, and the survey email will only be sent because you selected this option.</p>
+              )}
 
               {createState.error && <div className="form-error">{createState.error}</div>}
               <div className="modal-actions">
@@ -1729,14 +2455,80 @@ function CustomersPage() {
 }
 
 function CemeteriesPage() {
-  const { loading, error, data } = useApi('/cemeteries/', []);
+  const cemeteryState = useApi('/manage/cemeteries/', [], true, { refreshEvent: 'hs:cemeteries-updated' });
+  const [cemeteries, setCemeteries] = useState([]);
+  const [showCreateCemeteryWindow, setShowCreateCemeteryWindow] = useState(false);
+  const [form, setForm] = useState({
+    name: '',
+    address: '',
+    city: '',
+    state: '',
+    contact_name: '',
+    contact_phone: '',
+    contact_email: '',
+    notes: ''
+  });
+  const [saveState, setSaveState] = useState({ loading: false, error: '', success: '' });
+
+  useEffect(() => {
+    setCemeteries(Array.isArray(cemeteryState.data) ? cemeteryState.data : []);
+  }, [cemeteryState.data]);
+
+  function resetCreateForm() {
+    setForm({
+      name: '',
+      address: '',
+      city: '',
+      state: '',
+      contact_name: '',
+      contact_phone: '',
+      contact_email: '',
+      notes: ''
+    });
+    setSaveState({ loading: false, error: '', success: '' });
+  }
+
+  async function handleCreate(event) {
+    event.preventDefault();
+    setSaveState({ loading: true, error: '', success: '' });
+    try {
+      const res = await apiFetch('/manage/cemeteries/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form)
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(formatApiError(json, `Create failed (${res.status})`));
+      setCemeteries((prev) => [...prev, json.cemetery].sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''))));
+      resetCreateForm();
+      setShowCreateCemeteryWindow(false);
+      setSaveState({ loading: false, error: '', success: 'Cemetery created.' });
+      window.dispatchEvent(new Event('hs:cemeteries-updated'));
+    } catch (err) {
+      setSaveState({ loading: false, error: err.message || 'Failed to create cemetery.', success: '' });
+    }
+  }
 
   return (
     <>
-      <h1 className="page-title">Cemeteries</h1>
-      <p className="page-subtitle">Service locations and memorial distribution.</p>
+      <div className="page-heading page-heading-actions">
+        <div>
+          <h1 className="page-title">Cemeteries</h1>
+          <p className="page-subtitle">Service locations and memorial distribution.</p>
+        </div>
+        <button
+          type="button"
+          className="primary-btn"
+          onClick={() => {
+            setShowCreateCemeteryWindow(true);
+            setSaveState({ loading: false, error: '', success: '' });
+          }}
+        >
+          New Cemetery
+        </button>
+      </div>
 
-      {error && <div className="card warn">Backend error: {error}</div>}
+      {cemeteryState.error && <div className="card warn">Backend error: {cemeteryState.error}</div>}
 
       <div className="card">
         <table>
@@ -1749,9 +2541,9 @@ function CemeteriesPage() {
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan="4" className="meta">Loading...</td></tr>}
-            {!loading && data.length === 0 && <tr><td colSpan="4" className="meta">No cemeteries yet.</td></tr>}
-            {!loading && data.map((c) => (
+            {cemeteryState.loading && <tr><td colSpan="4" className="meta">Loading...</td></tr>}
+            {!cemeteryState.loading && cemeteries.length === 0 && <tr><td colSpan="4" className="meta">No cemeteries yet.</td></tr>}
+            {!cemeteryState.loading && cemeteries.map((c) => (
               <tr key={c.id}>
                 <td>{c.name}</td>
                 <td>{c.city || '—'}</td>
@@ -1762,13 +2554,129 @@ function CemeteriesPage() {
           </tbody>
         </table>
       </div>
+
+      {saveState.success && <div className="card form-success"><strong>{saveState.success}</strong></div>}
+
+      {showCreateCemeteryWindow && (
+        <div className="panel-overlay" onClick={() => {
+          resetCreateForm();
+          setShowCreateCemeteryWindow(false);
+        }}>
+          <div className="panel-window" onClick={(event) => event.stopPropagation()}>
+            <div className="card-header">
+              <div>
+                <h3>Create Cemetery</h3>
+                <p className="meta">Add a new service location for memorials and jobs.</p>
+              </div>
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={() => {
+                  resetCreateForm();
+                  setShowCreateCemeteryWindow(false);
+                }}
+              >
+                Close
+              </button>
+            </div>
+
+            <form className="form" onSubmit={handleCreate}>
+              <label>Name</label>
+              <input
+                type="text"
+                value={form.name}
+                onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
+                required
+              />
+
+              <label>Address</label>
+              <input
+                type="text"
+                value={form.address}
+                onChange={(event) => setForm((prev) => ({ ...prev, address: event.target.value }))}
+              />
+
+              <div className="field-row">
+                <div>
+                  <label>City</label>
+                  <input
+                    type="text"
+                    value={form.city}
+                    onChange={(event) => setForm((prev) => ({ ...prev, city: event.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label>State</label>
+                  <input
+                    type="text"
+                    value={form.state}
+                    onChange={(event) => setForm((prev) => ({ ...prev, state: event.target.value }))}
+                  />
+                </div>
+              </div>
+
+              <label>Contact Name</label>
+              <input
+                type="text"
+                value={form.contact_name}
+                onChange={(event) => setForm((prev) => ({ ...prev, contact_name: event.target.value }))}
+              />
+
+              <div className="field-row">
+                <div>
+                  <label>Contact Phone</label>
+                  <input
+                    type="text"
+                    value={form.contact_phone}
+                    onChange={(event) => setForm((prev) => ({ ...prev, contact_phone: event.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label>Contact Email</label>
+                  <input
+                    type="email"
+                    value={form.contact_email}
+                    onChange={(event) => setForm((prev) => ({ ...prev, contact_email: event.target.value }))}
+                  />
+                </div>
+              </div>
+
+              <label>Notes</label>
+              <textarea
+                value={form.notes}
+                onChange={(event) => setForm((prev) => ({ ...prev, notes: event.target.value }))}
+                rows={4}
+                style={{ padding: '10px', borderRadius: '8px', border: '1px solid #e5e7eb' }}
+              />
+
+              {saveState.error && <div className="form-error">{saveState.error}</div>}
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={() => {
+                    resetCreateForm();
+                    setShowCreateCemeteryWindow(false);
+                  }}
+                >
+                  Cancel
+                </button>
+                <button className="primary-btn" type="submit" disabled={saveState.loading}>
+                  {saveState.loading ? 'Creating...' : 'Create Cemetery'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </>
   );
 }
 
-function ArchivePage() {
+function ArchivePage({ sessionUser }) {
   const photosState = useApi('/photos/', [], true, { refreshEvent: 'hs:photos-updated' });
   const photos = Array.isArray(photosState.data) ? photosState.data : [];
+  const isAdmin = sessionUser?.frontend_role === 'admin';
 
   return (
     <>
@@ -1787,8 +2695,16 @@ function ArchivePage() {
                   <span className="photo-card-badge">{photo.photo_type_label}</span>
                 </div>
                 <div className="photo-card-body">
-                  <strong className="photo-card-title">{photo.job_title || `Service #${photo.service_id || photo.id}`}</strong>
-                  <span className="photo-card-subtitle">{photo.memorial_name || 'No memorial'}</span>
+                  <strong className="photo-card-title">
+                    {isAdmin
+                      ? (photo.memorial_name || `Service #${photo.service_id || photo.id}`)
+                      : (photo.job_title || `Service #${photo.service_id || photo.id}`)}
+                  </strong>
+                  <span className="photo-card-subtitle">
+                    {isAdmin
+                      ? (photo.job_title || `Service #${photo.service_id || photo.id}`)
+                      : (photo.memorial_name || 'No memorial')}
+                  </span>
                   <div className="photo-card-meta">{photo.cemetery_name || 'No cemetery'}</div>
                   {photo.caption && <p className="photo-card-caption">{photo.caption}</p>}
                 </div>
@@ -2197,6 +3113,277 @@ function EmailsPage() {
   );
 }
 
+function getInvoiceStatusClass(status) {
+  if (status === 'paid') return 'invoice-status invoice-status-paid';
+  return 'invoice-status invoice-status-sent';
+}
+
+function AdminInvoicesPage() {
+  const invoiceState = useApi('/manage/invoices/', [], true, { refreshEvent: 'hs:invoice-updated' });
+  const [invoices, setInvoices] = useState([]);
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState('');
+  const [subject, setSubject] = useState('Invoice #{{invoice_id}} for {{client_name}}');
+  const [body, setBody] = useState(
+    'Hello {{client_name}},\n\n'
+    + 'Your invoice for {{service_name}} is ready.\n'
+    + 'Amount due: {{amount_due}}\n'
+    + 'Due date: {{due_date}}\n\n'
+    + 'Pay securely here:\n'
+    + '{{payment_link}}\n\n'
+    + 'Best regards,\n'
+    + 'Headstone Restoration'
+  );
+  const [dueDate, setDueDate] = useState('');
+  const [notes, setNotes] = useState('');
+  const [sendState, setSendState] = useState({ loading: false, error: '', success: '', checkoutUrl: '' });
+
+  useEffect(() => {
+    setInvoices(Array.isArray(invoiceState.data) ? invoiceState.data : []);
+  }, [invoiceState.data]);
+
+  const selectedInvoice = useMemo(
+    () => invoices.find((invoice) => String(invoice.id) === String(selectedInvoiceId)) || null,
+    [invoices, selectedInvoiceId]
+  );
+
+  useEffect(() => {
+    if (!invoices.length) return;
+    if (selectedInvoiceId && selectedInvoice) return;
+    const preferred = invoices.find((invoice) => invoice.status !== 'paid') || invoices[0];
+    setSelectedInvoiceId(String(preferred.id));
+  }, [invoices, selectedInvoiceId, selectedInvoice]);
+
+  useEffect(() => {
+    if (!selectedInvoice) return;
+    setDueDate(selectedInvoice.due_date || '');
+    setNotes(selectedInvoice.notes || '');
+    setSendState({ loading: false, error: '', success: '', checkoutUrl: '' });
+  }, [selectedInvoiceId, selectedInvoice]);
+
+  const openInvoices = useMemo(() => invoices.filter((invoice) => invoice.status !== 'paid').length, [invoices]);
+  const paidInvoices = useMemo(() => invoices.filter((invoice) => invoice.status === 'paid').length, [invoices]);
+  const sentInvoices = useMemo(() => invoices.filter((invoice) => invoice.status === 'sent').length, [invoices]);
+
+  async function handleSend(event) {
+    event.preventDefault();
+    setSendState({ loading: true, error: '', success: '', checkoutUrl: '' });
+
+    if (!selectedInvoice) {
+      setSendState({ loading: false, error: 'Select an invoice first.', success: '', checkoutUrl: '' });
+      return;
+    }
+    if (!selectedInvoice.customer_email) {
+      setSendState({ loading: false, error: 'This client does not have an email address.', success: '', checkoutUrl: '' });
+      return;
+    }
+
+    try {
+      const res = await apiFetch(`/manage/invoices/${selectedInvoice.id}/send/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject,
+          body,
+          due_date: dueDate || null,
+          notes
+        })
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json.detail || `Invoice send failed (${res.status})`);
+      }
+      if (json.invoice) {
+        setInvoices((prev) => prev.map((invoice) => (invoice.id === json.invoice.id ? json.invoice : invoice)));
+      }
+      window.dispatchEvent(new Event('hs:invoice-updated'));
+      setSendState({
+        loading: false,
+        error: '',
+        success: `Invoice emailed to ${json.sent_to}.`,
+        checkoutUrl: json.checkout_url || ''
+      });
+    } catch (err) {
+      setSendState({
+        loading: false,
+        error: err.message || 'Failed to send invoice.',
+        success: '',
+        checkoutUrl: ''
+      });
+    }
+  }
+
+  return (
+    <>
+      <h1 className="page-title">Invoices</h1>
+      <p className="page-subtitle">Review invoices, personalize the message, and email Stripe payment links to clients.</p>
+
+      {invoiceState.error && <div className="card warn">Backend error: {invoiceState.error}</div>}
+
+      <section className="kpis">
+        <div className="kpi">
+          <span className="kpi-label">Invoices</span>
+          <strong>{invoices.length}</strong>
+          <small>{invoiceState.loading ? 'Loading...' : 'Across all customers'}</small>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">Open</span>
+          <strong>{openInvoices}</strong>
+          <small>Draft or sent</small>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">Sent</span>
+          <strong>{sentInvoices}</strong>
+          <small>Already emailed</small>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">Paid</span>
+          <strong>{paidInvoices}</strong>
+          <small>Closed invoices</small>
+        </div>
+      </section>
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h3>Invoice Queue</h3>
+              <p className="meta">Unpaid invoices stay at the top so you can send them quickly.</p>
+            </div>
+          </div>
+          {invoiceState.loading && <p className="meta">Loading invoices...</p>}
+          {!invoiceState.loading && invoices.length === 0 && <p className="meta">No invoices found.</p>}
+          {!invoiceState.loading && invoices.length > 0 && (
+            <div className="invoice-list">
+              {invoices.map((invoice) => (
+                <button
+                  key={invoice.id}
+                  type="button"
+                  className="invoice-row"
+                  onClick={() => setSelectedInvoiceId(String(invoice.id))}
+                  style={{
+                    textAlign: 'left',
+                    borderColor: String(invoice.id) === String(selectedInvoiceId) ? '#1d4ed8' : undefined,
+                    boxShadow: String(invoice.id) === String(selectedInvoiceId) ? '0 0 0 1px #1d4ed8 inset' : undefined
+                  }}
+                >
+                  <div>
+                    <div className="invoice-title">Invoice #{invoice.id} · {invoice.customer_name}</div>
+                    <div className="meta">
+                      {invoice.service_name || 'General invoice'} · {formatCurrency(Number(invoice.total_amount || 0))}
+                    </div>
+                    <div className="meta">
+                      {invoice.customer_email || 'No email'} · Due {formatDateOnly(invoice.due_date) || '—'}
+                    </div>
+                  </div>
+                  <div className="invoice-actions">
+                    <span className={getInvoiceStatusClass(invoice.status)}>{invoice.status || 'draft'}</span>
+                    <span className="meta">{invoice.items?.length || 0} item(s)</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h3>Send Invoice</h3>
+              <p className="meta">Each email is personalized per client and includes a Stripe-hosted payment link.</p>
+            </div>
+          </div>
+
+          {selectedInvoice && (
+            <div className="job-detail-summary">
+              <strong>{selectedInvoice.customer_name}</strong>
+              <span>{selectedInvoice.customer_email || 'No email on file'}</span>
+              <div className="meta">
+                Invoice #{selectedInvoice.id} · {selectedInvoice.service_name || 'General invoice'} · {formatCurrency(Number(selectedInvoice.total_amount || 0))}
+              </div>
+              <div className="meta">
+                Status: {selectedInvoice.status || 'draft'} · Issued: {formatDateOnly(selectedInvoice.issued_date) || '—'} · Due: {formatDateOnly(selectedInvoice.due_date) || '—'}
+              </div>
+            </div>
+          )}
+
+          <form className="form" onSubmit={handleSend}>
+            <label>Invoice</label>
+            <select
+              value={selectedInvoiceId}
+              onChange={(event) => setSelectedInvoiceId(event.target.value)}
+              required
+            >
+              <option value="">Select an invoice</option>
+              {invoices.map((invoice) => (
+                <option key={invoice.id} value={invoice.id}>
+                  #{invoice.id} · {invoice.customer_name} · {formatCurrency(Number(invoice.total_amount || 0))} · {invoice.status || 'draft'}
+                </option>
+              ))}
+            </select>
+
+            <label>Send To</label>
+            <input
+              type="text"
+              value={selectedInvoice ? `${selectedInvoice.customer_name || 'Client'} <${selectedInvoice.customer_email || 'no-email'}>` : ''}
+              readOnly
+              placeholder="Select an invoice to choose the client"
+            />
+
+            <label>Subject</label>
+            <input
+              type="text"
+              value={subject}
+              onChange={(event) => setSubject(event.target.value)}
+              placeholder="Invoice subject"
+            />
+
+            <label>Body</label>
+            <textarea
+              value={body}
+              onChange={(event) => setBody(event.target.value)}
+              rows={10}
+              style={{ padding: '10px', borderRadius: '8px', border: '1px solid #e5e7eb' }}
+            />
+
+            <label>Due Date</label>
+            <input
+              type="date"
+              value={dueDate}
+              onChange={(event) => setDueDate(event.target.value)}
+            />
+
+            <label>Internal Notes</label>
+            <textarea
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+              rows={4}
+              style={{ padding: '10px', borderRadius: '8px', border: '1px solid #e5e7eb' }}
+            />
+
+            <p className="meta">Tokens: {'{{client_name}}'}, {'{{first_name}}'}, {'{{invoice_id}}'}, {'{{amount_due}}'}, {'{{due_date}}'}, {'{{service_name}}'}, {'{{payment_link}}'}</p>
+
+            {sendState.error && <div className="form-error">{sendState.error}</div>}
+            {sendState.success && <div className="card form-success"><strong>{sendState.success}</strong></div>}
+            {sendState.checkoutUrl && (
+              <div className="meta">
+                Checkout link ready: <a href={sendState.checkoutUrl} target="_blank" rel="noreferrer">{sendState.checkoutUrl}</a>
+              </div>
+            )}
+
+            <button
+              className="primary-btn"
+              type="submit"
+              disabled={sendState.loading || !selectedInvoice || selectedInvoice.status === 'paid'}
+            >
+              {sendState.loading ? 'Sending...' : 'Email Invoice'}
+            </button>
+          </form>
+        </div>
+      </section>
+    </>
+  );
+}
+
 function AdminServiceOptionsManager() {
   const serviceOptionsState = useApi('/manage/service-options/?include_inactive=1', [], true, { refreshEvent: 'hs:service-options-updated' });
   const [form, setForm] = useState({ name: '', sort_order: '0' });
@@ -2456,6 +3643,7 @@ function EmployeeSchedulingPage() {
   const [services, setServices] = useState([]);
   const [completeState, setCompleteState] = useState({ loading: false, error: '', success: '' });
   const [uploadState, setUploadState] = useState({ loading: false, error: '', success: '', serviceId: null });
+  const [selectedServiceId, setSelectedServiceId] = useState('');
 
   useEffect(() => {
     setServices(Array.isArray(servicesState.data) ? servicesState.data : []);
@@ -2468,6 +3656,10 @@ function EmployeeSchedulingPage() {
   const pastJobs = useMemo(
     () => services.filter((svc) => svc.status === 'completed'),
     [services]
+  );
+  const selectedService = useMemo(
+    () => services.find((svc) => String(svc.id) === String(selectedServiceId)) || null,
+    [services, selectedServiceId]
   );
 
   async function handleMarkComplete(serviceId) {
@@ -2488,6 +3680,9 @@ function EmployeeSchedulingPage() {
       }
       const json = await res.json();
       setServices((prev) => prev.filter((item) => item.id !== Number(serviceId)));
+      if (String(selectedServiceId) === String(serviceId)) {
+        setSelectedServiceId('');
+      }
       window.dispatchEvent(new Event('hs:schedule-updated'));
       setCompleteState({
         loading: false,
@@ -2558,7 +3753,11 @@ function EmployeeSchedulingPage() {
         {!servicesState.loading && futureJobs.length > 0 && (
           <ul className="service-list">
             {futureJobs.map((svc) => (
-              <li key={svc.id}>
+              <li
+                key={svc.id}
+                className={`clickable-job-row${String(selectedServiceId) === String(svc.id) ? ' selected' : ''}`}
+                onClick={() => setSelectedServiceId(String(svc.id))}
+              >
                 <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
                 <span>{svc.cemetery_name || 'Scheduled location'}</span>
                 <div className="meta">
@@ -2571,7 +3770,10 @@ function EmployeeSchedulingPage() {
                 <button
                   className="primary-btn"
                   type="button"
-                  onClick={() => handleMarkComplete(svc.id)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    handleMarkComplete(svc.id);
+                  }}
                   disabled={completeState.loading || svc.status === 'completed'}
                 >
                   {completeState.loading ? 'Saving...' : 'Completed'}
@@ -2582,6 +3784,7 @@ function EmployeeSchedulingPage() {
                     accept="image/*"
                     onChange={(event) => handlePhotoChange(svc.id, event)}
                     disabled={uploadState.loading}
+                    onClick={(event) => event.stopPropagation()}
                     hidden
                   />
                   {uploadState.loading && uploadState.serviceId === svc.id ? 'Uploading...' : 'Add Photo'}
@@ -2599,7 +3802,11 @@ function EmployeeSchedulingPage() {
         {!servicesState.loading && pastJobs.length > 0 && (
           <ul className="service-list">
             {pastJobs.map((svc) => (
-              <li key={svc.id}>
+              <li
+                key={svc.id}
+                className={`clickable-job-row${String(selectedServiceId) === String(svc.id) ? ' selected' : ''}`}
+                onClick={() => setSelectedServiceId(String(svc.id))}
+              >
                 <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
                 <span>{svc.cemetery_name || 'Scheduled location'}</span>
                 <div className="meta">Completed {formatDateOnly(svc.completed_date)}</div>
@@ -2612,6 +3819,70 @@ function EmployeeSchedulingPage() {
           </ul>
         )}
       </div>
+
+      {selectedService && (
+        <div className="panel-overlay" onClick={() => setSelectedServiceId('')}>
+          <div className="panel-window" onClick={(event) => event.stopPropagation()}>
+            <div className="card-header">
+              <div>
+                <h3>{selectedService.memorial_name || `Service #${selectedService.id}`}</h3>
+                <p className="meta">Assigned job details for this technician visit.</p>
+              </div>
+              <button type="button" className="secondary-btn" onClick={() => setSelectedServiceId('')}>
+                Close
+              </button>
+            </div>
+
+            <div className="job-detail-summary">
+              <strong>{getServiceTypeLabel(selectedService)}</strong>
+              <span>{selectedService.cemetery_name || 'Scheduled location pending'}</span>
+              <div className="meta">
+                {selectedService.status || 'scheduled'} · {selectedService.technician_name || 'Assigned technician'}
+              </div>
+            </div>
+
+            <div className="survey-review-grid">
+              <div><strong>Job ID</strong><span>#{selectedService.id}</span></div>
+              <div><strong>Customer</strong><span>{selectedService.memorial_name || '—'}</span></div>
+              <div><strong>Service</strong><span>{getServiceTypeLabel(selectedService)}</span></div>
+              <div><strong>Status</strong><span>{selectedService.status || '—'}</span></div>
+              <div><strong>Scheduled</strong><span>{formatDateTimeShort(selectedService.scheduled_start)}</span></div>
+              <div><strong>Duration</strong><span>{selectedService.estimated_minutes ? `${selectedService.estimated_minutes} min` : '—'}</span></div>
+              <div><strong>Cemetery</strong><span>{selectedService.cemetery_name || '—'}</span></div>
+              <div><strong>Section</strong><span>{selectedService.section || '—'}</span></div>
+              <div><strong>Row</strong><span>{selectedService.row || '—'}</span></div>
+              <div><strong>Plot</strong><span>{selectedService.plot_number || '—'}</span></div>
+              <div><strong>GPS</strong><span>{selectedService.gps_lat != null && selectedService.gps_lng != null ? `${selectedService.gps_lat}, ${selectedService.gps_lng}` : '—'}</span></div>
+              <div><strong>Price</strong><span>{selectedService.price != null ? formatCurrency(Number(selectedService.price)) : '—'}</span></div>
+              <div className="survey-review-block"><strong>Location Notes</strong><span>{selectedService.access_notes || selectedService.customer_locating_notes || '—'}</span></div>
+              <div className="survey-review-block"><strong>Customer Notes</strong><span>{selectedService.customer_extra_notes || '—'}</span></div>
+            </div>
+
+            <div className="modal-actions">
+              {selectedService.status !== 'completed' && (
+                <button
+                  className="primary-btn"
+                  type="button"
+                  onClick={() => handleMarkComplete(selectedService.id)}
+                  disabled={completeState.loading}
+                >
+                  {completeState.loading ? 'Saving...' : 'Completed'}
+                </button>
+              )}
+              <label className="ghost-btn file-upload-btn">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => handlePhotoChange(selectedService.id, event)}
+                  disabled={uploadState.loading}
+                  hidden
+                />
+                {uploadState.loading && uploadState.serviceId === selectedService.id ? 'Uploading...' : 'Add Photo'}
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -3186,6 +4457,7 @@ function App() {
 
   useEffect(() => {
     if (authState.loading) return;
+    if (page === 'public-survey') return;
     if (!authState.authenticated) {
       if (path !== LOGIN_PATH && path !== SETUP_PASSWORD_PATH) navigate(LOGIN_PATH);
       return;
@@ -3196,7 +4468,7 @@ function App() {
     if (path !== canonicalPath) {
       navigate(canonicalPath);
     }
-  }, [authState.authenticated, authState.loading, canonicalPath, navigate, path]);
+  }, [authState.authenticated, authState.loading, canonicalPath, navigate, path, page]);
 
   async function handleLogin(event) {
     event.preventDefault();
@@ -3273,6 +4545,10 @@ function App() {
       ...prev,
       user: nextUser
     }));
+  }
+
+  if (page === 'public-survey') {
+    return <PublicSurveyPage surveyToken={route.surveyToken} />;
   }
 
   if (authState.loading) {
