@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import dj_database_url 
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -16,7 +17,7 @@ load_dotenv(BASE_DIR / ".env")
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
 ALLOWED_HOSTS = []
 
@@ -39,6 +40,8 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -109,38 +112,13 @@ def env_trimmed(key: str, default: str = "") -> str:
     return value.strip() if isinstance(value, str) else value
 
 
-db_host = env_trimmed("DB_HOST")
-db_name = env_trimmed("DB_NAME")
-db_user = env_trimmed("DB_USER")
-db_password = env_trimmed("DB_PASSWORD")
-db_port = env_trimmed("DB_PORT", "5432")
-db_engine = env_trimmed("DB_ENGINE", "sqlite").lower()
-
-if db_engine == "postgres" and db_host and db_name and db_user:
-    # Opt-in managed Postgres (e.g., Supabase) when enabled explicitly.
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "NAME": db_name,
-            "USER": db_user,
-            "PASSWORD": db_password,
-            "HOST": db_host,
-            "PORT": db_port,
-            "OPTIONS": {
-                "sslmode": env_trimmed("DB_SSLMODE", "require"),
-            },
-        }
-    }
-else:
-    sqlite_name = env_trimmed("SQLITE_PATH", str(BASE_DIR / "db.sqlite3"))
-    sqlite_path = Path(sqlite_name).expanduser()
-    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": sqlite_path,
-        }
-    }
+DATABASES = {
+    'default': dj_database_url.config(
+        # Replace this value with your local database's connection string.
+        default='postgresql://postgres:postgres@localhost:5432/mysite',
+        conn_max_age=600
+    )
+}
 
 
 # Password validation
@@ -174,7 +152,15 @@ FRONTEND_STATIC_CANDIDATES = [
 STATICFILES_DIRS = [BASE_DIR / "core" / "static"] + [
     path for path in FRONTEND_STATIC_CANDIDATES if path.exists()
 ]
-STATIC_ROOT = BASE_DIR / "staticfiles"
+
+if not DEBUG:
+    # Tell Django to copy static assets into a path called `staticfiles` (this is specific to Render)
+    STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
+    # Enable the WhiteNoise storage backend, which compresses static files to reduce disk use
+    # and renames the files with unique names for each version to support long-term caching
+    STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 

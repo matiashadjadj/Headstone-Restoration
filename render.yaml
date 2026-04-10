@@ -1,0 +1,22 @@
+databases:
+  - name: headstone-restoration-db
+    plan: free
+    databaseName: headstone_restoration
+    user: headstone_restoration
+
+services:
+  - type: web
+    plan: free
+    name: headstone-restoration
+    runtime: python
+    buildCommand: './build.sh'
+    startCommand: 'python -m gunicorn backend.config.asgi:application -k uvicorn.workers.UvicornWorker'
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: headstone-restoration-db
+          property: connectionString
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: WEB_CONCURRENCY
+        value: 4
