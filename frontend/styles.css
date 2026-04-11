@@ -100,7 +100,7 @@ body {
   border-bottom: 1px solid #e5e7eb;
   padding: 8px 24px;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
 }
@@ -219,13 +219,6 @@ body {
   align-items: center;
   gap: 16px;
   justify-self: end;
-}
-
-.bell {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: #f1f5f9;
 }
 
 /* Button */
@@ -1939,36 +1932,6 @@ body.theme-dark .revenue-rate {
   justify-content: center;
 }
 
-/* Responsive / Mobile Navigation */
-.hamburger {
-  width: 44px;
-  height: 44px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  background: transparent;
-  border: 1px solid transparent;
-  cursor: pointer;
-}
-.hamburger .bar {
-  display: block;
-  width: 18px;
-  height: 2px;
-  background: #1f2937;
-  position: relative;
-}
-.hamburger .bar::before, .hamburger .bar::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  width: 18px;
-  height: 2px;
-  background: #1f2937;
-}
-.hamburger .bar::before { top: -6px; }
-.hamburger .bar::after { top: 6px; }
-
 /* Hide sidebar on small screens by default */
 @media (max-width: 900px) {
   .sidebar {
@@ -1987,25 +1950,16 @@ body.theme-dark .revenue-rate {
 
   .topbar {
     min-height: 64px;
-    grid-template-columns: auto 1fr;
-    grid-template-areas:
-      "menu actions"
-      "search search";
+    grid-template-columns: 1fr;
     gap: 10px;
     padding: 10px 12px;
   }
 
-  .hamburger {
-    grid-area: menu;
-  }
-
   .search {
-    grid-area: search;
     width: 100%;
   }
 
   .topbar-actions {
-    grid-area: actions;
     justify-self: end;
   }
 
@@ -2029,7 +1983,6 @@ body.theme-dark .revenue-rate {
   .topbar-login {
     display: flex;
     grid-template-columns: none;
-    grid-template-areas: none;
     gap: 0;
     min-height: 0;
     padding: 0;
@@ -2117,10 +2070,6 @@ body.theme-dark .revenue-rate {
     align-items: flex-start;
   }
 
-  .topbar-actions .bell {
-    display: none;
-  }
-
   .role-select {
     min-width: 104px;
   }
@@ -2147,11 +2096,6 @@ body.theme-dark .revenue-rate {
 
   .search input {
     font-size: 13px;
-  }
-
-  .hamburger {
-    width: 40px;
-    height: 40px;
   }
 
   .logo-text strong {

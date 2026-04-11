@@ -6323,14 +6323,6 @@ function Layout({ role, sessionUser, navItems, currentPath, onLogout, children }
 
       <div className="main">
         <header className="topbar">
-          <button
-            className="hamburger"
-            aria-label="Toggle navigation"
-            aria-expanded={isSidebarOpen}
-            onClick={handleToggleMenu}
-          >
-            <span className="bar"></span>
-          </button>
           <div className="search">
             <input type="text" placeholder="Search memorials, customers, cemeteries, GPS..." />
           </div>
@@ -6347,7 +6339,6 @@ function Layout({ role, sessionUser, navItems, currentPath, onLogout, children }
               <strong>{sessionUser?.full_name || sessionUser?.username || 'User'}</strong>
               <span>{ROLE_CONFIGS[role]?.label || role}</span>
             </div>
-            <div className="bell"></div>
             <button className="ghost-btn" type="button" onClick={onLogout}>Logout</button>
           </div>
         </header>
