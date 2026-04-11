@@ -3,6 +3,8 @@ from urllib.parse import urlparse
 from django.contrib.auth.models import User
 from rest_framework import serializers
 from core.models import (
+    CustomerSurveyRequest,
+    CustomerSurveySubmission,
     Service,
     ServiceOption,
     ServiceAssignment,
@@ -138,14 +140,53 @@ class RecentServiceSerializer(serializers.ModelSerializer):
 
 
 class MemorialSummarySerializer(serializers.ModelSerializer):
+    customer_id = serializers.IntegerField(read_only=True)
+    cemetery_id = serializers.IntegerField(source="plot.cemetery_id", read_only=True)
     cemetery = serializers.CharField(source="plot.cemetery.name", read_only=True)
     customer = serializers.CharField(source="customer.full_name", read_only=True)
+    section = serializers.CharField(source="plot.section", read_only=True)
+    row = serializers.CharField(source="plot.row", read_only=True)
+    plot_number = serializers.CharField(source="plot.plot_number", read_only=True)
+    material = serializers.CharField(read_only=True)
     last_service_status = serializers.CharField(read_only=True)
     last_service_date = serializers.DateField(read_only=True)
 
     class Meta:
         model = Memorial
-        fields = ["id", "customer", "cemetery", "last_service_status", "last_service_date"]
+        fields = [
+            "id",
+            "customer_id",
+            "customer",
+            "cemetery_id",
+            "cemetery",
+            "section",
+            "row",
+            "plot_number",
+            "material",
+            "last_service_status",
+            "last_service_date",
+        ]
+
+
+class MemorialCreateSerializer(serializers.Serializer):
+    customer_id = serializers.IntegerField(min_value=1)
+    cemetery_id = serializers.IntegerField(min_value=1)
+    section = serializers.CharField(max_length=50)
+    row = serializers.CharField(max_length=50)
+    plot_number = serializers.CharField(max_length=50)
+    material = serializers.ChoiceField(choices=Memorial.Material.choices, required=False, default=Memorial.Material.OTHER)
+    inscription_text = serializers.CharField(required=False, allow_blank=True)
+    condition_summary = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_section(self, value):
+        return value.strip()
+
+    def validate_row(self, value):
+        return value.strip()
+
+    def validate_plot_number(self, value):
+        return value.strip()
 
 
 class CustomerSummarySerializer(serializers.ModelSerializer):
@@ -166,6 +207,24 @@ class CemeterySummarySerializer(serializers.ModelSerializer):
         fields = ["id", "name", "city", "memorials_count", "active_services"]
 
 
+class CemeteryUpsertSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Cemetery
+        fields = [
+            "name",
+            "address",
+            "city",
+            "state",
+            "contact_name",
+            "contact_phone",
+            "contact_email",
+            "notes",
+        ]
+
+    def validate_name(self, value):
+        return value.strip()
+
+
 class TechnicianSerializer(serializers.ModelSerializer):
     class Meta:
         model = Employee
@@ -175,6 +234,11 @@ class TechnicianSerializer(serializers.ModelSerializer):
 class SchedulingServiceSerializer(serializers.ModelSerializer):
     memorial_name = serializers.CharField(source="memorial.customer.full_name", read_only=True)
     cemetery_name = serializers.CharField(source="memorial.plot.cemetery.name", read_only=True)
+    section = serializers.CharField(source="memorial.plot.section", read_only=True)
+    row = serializers.CharField(source="memorial.plot.row", read_only=True)
+    plot_number = serializers.CharField(source="memorial.plot.plot_number", read_only=True)
+    access_notes = serializers.CharField(source="memorial.plot.access_notes", read_only=True)
+    internal_notes = serializers.CharField(read_only=True)
     service_type_label = serializers.CharField(read_only=True)
     service_option_id = serializers.IntegerField(read_only=True)
     technician_id = serializers.SerializerMethodField()
@@ -182,6 +246,12 @@ class SchedulingServiceSerializer(serializers.ModelSerializer):
     price = serializers.SerializerMethodField()
     gps_lat = serializers.DecimalField(source="memorial.plot.gps_lat", max_digits=9, decimal_places=6, read_only=True)
     gps_lng = serializers.DecimalField(source="memorial.plot.gps_lng", max_digits=9, decimal_places=6, read_only=True)
+    survey_status = serializers.SerializerMethodField()
+    survey_sent_at = serializers.SerializerMethodField()
+    survey_submitted_at = serializers.SerializerMethodField()
+    survey_expires_at = serializers.SerializerMethodField()
+    customer_locating_notes = serializers.SerializerMethodField()
+    customer_extra_notes = serializers.SerializerMethodField()
 
     class Meta:
         model = Service
@@ -195,11 +265,22 @@ class SchedulingServiceSerializer(serializers.ModelSerializer):
             "estimated_minutes",
             "memorial_name",
             "cemetery_name",
+            "section",
+            "row",
+            "plot_number",
+            "access_notes",
+            "internal_notes",
             "technician_id",
             "technician_name",
             "price",
             "gps_lat",
             "gps_lng",
+            "survey_status",
+            "survey_sent_at",
+            "survey_submitted_at",
+            "survey_expires_at",
+            "customer_locating_notes",
+            "customer_extra_notes",
         ]
 
     def get_technician_id(self, obj):
@@ -216,15 +297,52 @@ class SchedulingServiceSerializer(serializers.ModelSerializer):
             return None
         return float(raw)
 
+    def get_survey_status(self, obj):
+        survey_request = getattr(obj, "survey_request", None)
+        return survey_request.status if survey_request else "not_sent"
+
+    def get_survey_sent_at(self, obj):
+        survey_request = getattr(obj, "survey_request", None)
+        return survey_request.sent_at if survey_request else None
+
+    def get_survey_submitted_at(self, obj):
+        survey_request = getattr(obj, "survey_request", None)
+        return survey_request.submitted_at if survey_request else None
+
+    def get_survey_expires_at(self, obj):
+        survey_request = getattr(obj, "survey_request", None)
+        return survey_request.expires_at if survey_request else None
+
+    def get_customer_locating_notes(self, obj):
+        survey_request = getattr(obj, "survey_request", None)
+        submission = getattr(survey_request, "submission", None) if survey_request else None
+        return submission.locating_notes if submission else ""
+
+    def get_customer_extra_notes(self, obj):
+        survey_request = getattr(obj, "survey_request", None)
+        submission = getattr(survey_request, "submission", None) if survey_request else None
+        return submission.extra_notes if submission else ""
+
 
 class CreateSchedulingServiceSerializer(GPSCoordinatesValidationMixin):
-    memorial_id = serializers.IntegerField()
+    customer_id = serializers.IntegerField(required=False)
+    memorial_id = serializers.IntegerField(required=False)
     service_option_id = serializers.IntegerField(required=False)
     service_type = serializers.ChoiceField(choices=Service.ServiceType.choices, required=False)
+    send_survey_email = serializers.BooleanField(required=False, default=False)
     initial_price = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=0, required=False, allow_null=True)
+    cemetery_name = serializers.CharField(required=False, allow_blank=True)
+    cemetery_address = serializers.CharField(required=False, allow_blank=True)
+    section = serializers.CharField(required=False, allow_blank=True)
+    row = serializers.CharField(required=False, allow_blank=True)
+    plot_number = serializers.CharField(required=False, allow_blank=True)
+    locating_notes = serializers.CharField(required=False, allow_blank=True)
+    customer_notes = serializers.CharField(required=False, allow_blank=True)
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+        if not attrs.get("customer_id") and not attrs.get("memorial_id"):
+            raise serializers.ValidationError("Select a customer.")
         if not attrs.get("service_option_id") and not attrs.get("service_type"):
             raise serializers.ValidationError("Select a service option.")
         return attrs
@@ -465,6 +583,40 @@ class CustomerInvoiceSerializer(serializers.ModelSerializer):
         ]
 
 
+class AdminInvoiceSerializer(serializers.ModelSerializer):
+    items = InvoiceItemSerializer(many=True, read_only=True)
+    customer_name = serializers.CharField(source="customer.full_name", read_only=True)
+    customer_email = serializers.CharField(source="customer.email", read_only=True)
+    memorial_name = serializers.CharField(source="service.memorial.customer.full_name", read_only=True)
+    cemetery_name = serializers.CharField(source="service.memorial.plot.cemetery.name", read_only=True)
+    service_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Invoice
+        fields = [
+            "id",
+            "customer_name",
+            "customer_email",
+            "status",
+            "issued_date",
+            "due_date",
+            "currency",
+            "total_amount",
+            "paid_at",
+            "notes",
+            "service_name",
+            "memorial_name",
+            "cemetery_name",
+            "stripe_checkout_session_id",
+            "items",
+        ]
+
+    def get_service_name(self, obj):
+        if obj.service_id and obj.service:
+            return obj.service.service_type_label
+        return "General invoice"
+
+
 class CreateCheckoutSessionSerializer(serializers.Serializer):
     invoice_id = serializers.IntegerField(min_value=1)
     customer_email = serializers.EmailField()
@@ -472,3 +624,95 @@ class CreateCheckoutSessionSerializer(serializers.Serializer):
 
 class VerifyCheckoutSessionSerializer(serializers.Serializer):
     session_id = serializers.CharField(max_length=255)
+
+
+class AdminSendInvoiceSerializer(serializers.Serializer):
+    subject = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    body = serializers.CharField(required=False, allow_blank=True)
+    due_date = serializers.DateField(required=False, allow_null=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class CustomerSurveyRequestSerializer(serializers.ModelSerializer):
+    status = serializers.CharField(read_only=True)
+    submission_id = serializers.IntegerField(source="submission.id", read_only=True)
+
+    class Meta:
+        model = CustomerSurveyRequest
+        fields = [
+            "id",
+            "token",
+            "status",
+            "sent_at",
+            "expires_at",
+            "submitted_at",
+            "submission_id",
+        ]
+
+
+class CustomerSurveySubmissionSerializer(GPSCoordinatesValidationMixin, serializers.ModelSerializer):
+    photo_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CustomerSurveySubmission
+        fields = [
+            "id",
+            "customer_name",
+            "email",
+            "phone",
+            "cemetery_name",
+            "cemetery_address",
+            "section",
+            "row",
+            "plot_number",
+            "grave_number",
+            "gps_lat",
+            "gps_lng",
+            "locating_notes",
+            "extra_notes",
+            "photo",
+            "photo_url",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["photo_url", "created_at", "updated_at"]
+        extra_kwargs = {
+            "customer_name": {"required": True},
+        }
+
+    def get_photo_url(self, obj):
+        if not obj.photo:
+            return ""
+        request = self.context.get("request")
+        try:
+            return request.build_absolute_uri(obj.photo.url) if request else obj.photo.url
+        except Exception:
+            return obj.photo.url
+
+
+class CustomerSurveyDetailSerializer(serializers.Serializer):
+    request = CustomerSurveyRequestSerializer(allow_null=True)
+    public_url = serializers.CharField(allow_blank=True)
+    service = SchedulingServiceSerializer()
+    submission = CustomerSurveySubmissionSerializer(allow_null=True)
+
+
+class CustomerSurveyRequestCreateSerializer(serializers.Serializer):
+    expires_in_days = serializers.IntegerField(min_value=1, max_value=90, required=False)
+
+
+class PublicSurveyContextSerializer(serializers.Serializer):
+    service_id = serializers.IntegerField()
+    service_name = serializers.CharField()
+    memorial_name = serializers.CharField(allow_blank=True)
+    cemetery_name = serializers.CharField(allow_blank=True)
+    status = serializers.CharField()
+    expires_at = serializers.DateTimeField(allow_null=True)
+    submitted_at = serializers.DateTimeField(allow_null=True)
+
+
+class PublicCustomerSurveySubmissionSerializer(CustomerSurveySubmissionSerializer):
+    photo = serializers.FileField(required=False, allow_null=True)
+
+    class Meta(CustomerSurveySubmissionSerializer.Meta):
+        read_only_fields = ["photo_url", "created_at", "updated_at"]

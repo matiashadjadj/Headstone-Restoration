@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Headstone Restoration FSM</title>
-  <link rel="stylesheet" href="styles.css?v=20260331-archive-polish" />
+  <link rel="stylesheet" href="styles.css?v=20260411-fix-api-base-cemetery-autocomplete" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.20/index.global.min.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -14,37 +14,26 @@
   <div id="root"></div>
   <script>
     (function() {
-      const configured = String(window.__API_BASE__ || '').trim();
-      if (configured) {
-        return;
-      }
-
       const { protocol, hostname, origin, port } = window.location;
-      const isHttp = protocol === 'http:' || protocol === 'https:';
       const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
 
-      if (isLocalHost && port === '8000') {
-        window.__API_BASE__ = '/api';
+      if (isLocalHost && port !== '8000') {
+        window.__API_BASE__ = 'http://127.0.0.1:8000';
         return;
       }
 
-      if (isLocalHost) {
-        window.__API_BASE__ = 'http://127.0.0.1:8000/api';
+      if (protocol === 'http:' || protocol === 'https:') {
+        window.__API_BASE__ = origin.replace(/\/$/, '');
         return;
       }
 
-      if (isHttp) {
-        window.__API_BASE__ = `${origin.replace(/\/$/, '')}/api`;
-        return;
-      }
-
-      window.__API_BASE__ = 'http://127.0.0.1:8000/api';
+      window.__API_BASE__ = '';
     })();
   </script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.20/index.global.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script type="text/babel" data-presets="env,react" src="app.jsx?v=20260401-schedule-reassign"></script>
+  <script type="text/babel" data-presets="env,react" src="app.jsx?v=20260411-fix-api-base-cemetery-autocomplete"></script>
 </body>
 </html>

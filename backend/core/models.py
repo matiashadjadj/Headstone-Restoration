@@ -243,6 +243,85 @@ class Service(TimestampedModel):
         return f"Service #{self.id} - {self.service_type_label} ({self.get_status_display()})"
 
 
+class CustomerSurveyRequest(TimestampedModel):
+    service = models.OneToOneField(Service, on_delete=models.CASCADE, related_name="survey_request")
+    token = models.CharField(max_length=128, unique=True, db_index=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+
+    def save(self, *args, **kwargs):
+        if not self.token:
+            self.token = secrets.token_urlsafe(32)
+        if not self.expires_at:
+            expiry_days = getattr(settings, "CUSTOMER_SURVEY_EXPIRY_DAYS", 14)
+            self.expires_at = timezone.now() + timedelta(days=expiry_days)
+        if not self.sent_at:
+            self.sent_at = timezone.now()
+        super().save(*args, **kwargs)
+
+    @property
+    def status(self) -> str:
+        if self.submitted_at:
+            return "submitted"
+        if self.expires_at and self.expires_at <= timezone.now():
+            return "expired"
+        if self.sent_at:
+            return "pending"
+        return "not_sent"
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == "pending"
+
+    def refresh_token(self):
+        self.token = secrets.token_urlsafe(32)
+        self.sent_at = timezone.now()
+        expiry_days = getattr(settings, "CUSTOMER_SURVEY_EXPIRY_DAYS", 14)
+        self.expires_at = timezone.now() + timedelta(days=expiry_days)
+        self.save(update_fields=["token", "sent_at", "expires_at", "updated_at"])
+
+    def __str__(self) -> str:
+        return f"Survey request for Service #{self.service_id}"
+
+
+class CustomerSurveySubmission(TimestampedModel):
+    survey_request = models.OneToOneField(
+        CustomerSurveyRequest,
+        on_delete=models.CASCADE,
+        related_name="submission",
+    )
+    customer_name = models.CharField(max_length=255)
+    email = models.EmailField(blank=True)
+    phone = models.CharField(max_length=30, blank=True)
+    cemetery_name = models.CharField(max_length=255, blank=True)
+    cemetery_address = models.CharField(max_length=255, blank=True)
+    section = models.CharField(max_length=50, blank=True)
+    row = models.CharField(max_length=50, blank=True)
+    plot_number = models.CharField(max_length=50, blank=True)
+    grave_number = models.CharField(max_length=50, blank=True)
+    gps_lat = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("-90")), MaxValueValidator(Decimal("90"))],
+    )
+    gps_lng = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("-180")), MaxValueValidator(Decimal("180"))],
+    )
+    locating_notes = models.TextField(blank=True)
+    extra_notes = models.TextField(blank=True)
+    photo = models.FileField(upload_to="survey_photos/", blank=True)
+
+    def __str__(self) -> str:
+        return f"Survey submission for Service #{self.survey_request.service_id}"
+
+
 class ServiceStatusHistory(models.Model):
     service = models.ForeignKey(Service, on_delete=models.CASCADE, related_name="status_history")
     old_status = models.CharField(max_length=30, blank=True)
@@ -289,6 +368,7 @@ class Photo(TimestampedModel):
 
     memorial = models.ForeignKey(Memorial, on_delete=models.CASCADE, related_name="photos")
     service = models.ForeignKey(Service, on_delete=models.SET_NULL, null=True, blank=True, related_name="photos")
+    uploaded_by = models.ForeignKey(Employee, on_delete=models.SET_NULL, null=True, blank=True, related_name="uploaded_photos")
 
     photo_type = models.CharField(max_length=20, choices=PhotoType.choices, default=PhotoType.OTHER)
 
