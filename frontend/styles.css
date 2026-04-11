@@ -742,16 +742,32 @@ td {
   min-height: 42px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 14px;
   padding: 0 12px;
   border: 1px solid #dbe4f0;
-  border-radius: 8px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.02);
 }
 
 .staff-active-toggle-row em {
-  font-style: normal;
-  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #e5e7eb;
   color: #475569;
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.staff-active-toggle-row em.is-active {
+  background: #dcfce7;
+  color: #166534;
 }
 
 /* Chart Placeholder */
@@ -1280,14 +1296,14 @@ textarea {
 }
 
 .checkbox-card {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  display: flex;
   align-items: center;
-  gap: 14px;
-  min-height: 76px;
-  padding: 16px 18px;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 82px;
+  padding: 18px 20px;
   border: 1px solid #dbe3ef;
-  border-radius: 18px;
+  border-radius: 20px;
   background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
   box-shadow: 0 1px 0 rgba(15, 23, 42, 0.02), 0 12px 24px rgba(15, 23, 42, 0.04);
   cursor: pointer;
@@ -1305,35 +1321,86 @@ textarea {
   box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
 }
 
-.checkbox-card input[type="checkbox"] {
-  width: 20px;
-  height: 20px;
-  margin: 0;
-  padding: 0;
-  flex: 0 0 auto;
-  accent-color: #2563eb;
-  cursor: pointer;
-  transition: transform 140ms ease, box-shadow 140ms ease;
-}
-
-.checkbox-card input[type="checkbox"]:checked {
-  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
-}
-
-.checkbox-card input[type="checkbox"]:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.16);
-}
-
-.checkbox-card span {
-  font-size: 14px;
-  font-weight: 600;
+.checkbox-card-copy {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 700;
   line-height: 1.3;
   color: #0f172a;
 }
 
+.checkbox-switch {
+  --switch-width: 54px;
+  --switch-height: 32px;
+  --switch-thumb: calc(var(--switch-height) - 8px);
+  --switch-offset: 4px;
+  position: relative;
+  display: inline-flex;
+  width: var(--switch-width);
+  height: var(--switch-height);
+  flex: 0 0 auto;
+}
+
+.checkbox-switch.checkbox-switch-sm {
+  --switch-width: 48px;
+  --switch-height: 28px;
+}
+
+.checkbox-switch input[type="checkbox"] {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.checkbox-switch-track {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: linear-gradient(180deg, #e7edf5 0%, #d9e2ec 100%);
+  box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.06);
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.checkbox-switch-track::after {
+  content: '';
+  position: absolute;
+  top: var(--switch-offset);
+  left: var(--switch-offset);
+  width: var(--switch-thumb);
+  height: var(--switch-thumb);
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.14);
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.checkbox-switch input[type="checkbox"]:checked + .checkbox-switch-track {
+  border-color: #2563eb;
+  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
+}
+
+.checkbox-switch input[type="checkbox"]:checked + .checkbox-switch-track::after {
+  transform: translateX(calc(var(--switch-width) - var(--switch-height)));
+}
+
+.checkbox-switch input[type="checkbox"]:focus-visible + .checkbox-switch-track {
+  outline: none;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.18), inset 0 1px 1px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.checkbox-switch:hover .checkbox-switch-track {
+  border-color: #93c5fd;
+}
+
 @supports selector(.checkbox-card:has(input:checked)) {
-  .checkbox-card:has(input:checked) {
+  .checkbox-card:has(.checkbox-switch input:checked) {
     border-color: #93c5fd;
     background: linear-gradient(180deg, #eff6ff 0%, #ffffff 100%);
     box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.22), 0 18px 34px rgba(37, 99, 235, 0.1);
@@ -1738,20 +1805,48 @@ body.theme-dark .checkbox-card:hover {
   border-color: #3b82f6;
 }
 
-body.theme-dark .checkbox-card span {
+body.theme-dark .checkbox-card-copy {
   color: #e2e8f0;
 }
 
-body.theme-dark .checkbox-card input[type="checkbox"] {
-  accent-color: #3b82f6;
+body.theme-dark .checkbox-switch-track {
+  border-color: #2a3b58;
+  background: linear-gradient(180deg, #1f2e46 0%, #17253b 100%);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.03), 0 1px 2px rgba(0, 0, 0, 0.28);
 }
 
-body.theme-dark .checkbox-card input[type="checkbox"]:checked {
-  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.16);
+body.theme-dark .checkbox-switch-track::after {
+  background: #f8fafc;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+body.theme-dark .checkbox-switch input[type="checkbox"]:checked + .checkbox-switch-track {
+  border-color: #2563eb;
+  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
+}
+
+body.theme-dark .checkbox-switch input[type="checkbox"]:focus-visible + .checkbox-switch-track {
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.24), inset 0 1px 1px rgba(255, 255, 255, 0.03), 0 1px 2px rgba(0, 0, 0, 0.28);
+}
+
+body.theme-dark .staff-active-toggle-row {
+  border-color: #1f2e46;
+  background: linear-gradient(180deg, #111b2e 0%, #0f172a 100%);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+body.theme-dark .staff-active-toggle-row em {
+  background: #1f2e46;
+  color: #cbd5e1;
+}
+
+body.theme-dark .staff-active-toggle-row em.is-active {
+  background: #14532d;
+  color: #bbf7d0;
 }
 
 @supports selector(.checkbox-card:has(input:checked)) {
-  body.theme-dark .checkbox-card:has(input:checked) {
+  body.theme-dark .checkbox-card:has(.checkbox-switch input:checked) {
     border-color: #3b82f6;
     background: linear-gradient(180deg, #17253b 0%, #111b2e 100%);
     box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.22), 0 18px 34px rgba(0, 0, 0, 0.24);

@@ -2679,12 +2679,17 @@ function UsersAdminPage() {
                     <label className="staff-field staff-active-toggle">
                       <span className="staff-field-label">Account</span>
                       <div className="staff-active-toggle-row">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(activeDrafts[row.id])}
-                          onChange={(e) => setActiveDrafts((p) => ({ ...p, [row.id]: e.target.checked }))}
-                        />
-                        <em>{Boolean(activeDrafts[row.id]) ? 'Enabled' : 'Disabled'}</em>
+                        <em className={Boolean(activeDrafts[row.id]) ? 'is-active' : ''}>
+                          {Boolean(activeDrafts[row.id]) ? 'Enabled' : 'Disabled'}
+                        </em>
+                        <span className="checkbox-switch checkbox-switch-sm">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(activeDrafts[row.id])}
+                            onChange={(e) => setActiveDrafts((p) => ({ ...p, [row.id]: e.target.checked }))}
+                          />
+                          <span className="checkbox-switch-track" aria-hidden="true"></span>
+                        </span>
                       </div>
                     </label>
                   </div>
@@ -4946,12 +4951,18 @@ function MemorialFormFields({ form, onChange, onPhotoNamesChange }) {
 
       <div className="field-row checkbox-row">
         <label className="checkbox-card">
-          <input type="checkbox" name="has_plaque" checked={Boolean(form.has_plaque)} onChange={onChange} />
-          <span>Has plaque</span>
+          <span className="checkbox-card-copy">Has plaque</span>
+          <span className="checkbox-switch">
+            <input type="checkbox" name="has_plaque" checked={Boolean(form.has_plaque)} onChange={onChange} />
+            <span className="checkbox-switch-track" aria-hidden="true"></span>
+          </span>
         </label>
         <label className="checkbox-card">
-          <input type="checkbox" name="has_paint" checked={Boolean(form.has_paint)} onChange={onChange} />
-          <span>Has paint</span>
+          <span className="checkbox-card-copy">Has paint</span>
+          <span className="checkbox-switch">
+            <input type="checkbox" name="has_paint" checked={Boolean(form.has_paint)} onChange={onChange} />
+            <span className="checkbox-switch-track" aria-hidden="true"></span>
+          </span>
         </label>
       </div>
 
