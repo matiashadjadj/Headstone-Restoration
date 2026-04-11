@@ -803,18 +803,54 @@ td {
 }
 
 .form {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  display: grid;
+  gap: 16px;
+}
+
+.form-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.form-field {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.field-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #475569;
+}
+
+.field-hint {
+  display: block;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #64748b;
 }
 
 textarea {
   min-height: 88px;
   resize: vertical;
-  padding: 10px;
-  border-radius: 8px;
-  border: 1px solid #e5e7eb;
   font: inherit;
+}
+
+.form > label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #475569;
+}
+
+.form > input,
+.form > select,
+.form > textarea {
+  width: 100%;
 }
 
 .compact-list {
@@ -958,6 +994,128 @@ textarea {
 
 .record-card-meta span {
   font-size: 12px;
+  color: #64748b;
+}
+
+.cemetery-autocomplete {
+  display: grid;
+  gap: 8px;
+  position: relative;
+}
+
+.field-label-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.field-label-row label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #475569;
+}
+
+.autocomplete-shell {
+  position: relative;
+}
+
+.autocomplete-shell input {
+  padding-right: 132px;
+}
+
+.autocomplete-selected-pill {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.selected-record-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #dbeafe;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f8fbff 0%, #eef5ff 100%);
+}
+
+.selected-record-banner strong {
+  display: block;
+  color: #0f172a;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.selected-record-banner span {
+  display: block;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.autocomplete-menu {
+  position: relative;
+  z-index: 20;
+  display: grid;
+  gap: 0;
+  border: 1px solid #dbe3ef;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.14);
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.autocomplete-option {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid #eef2f7;
+  background: #ffffff;
+  text-align: left;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+
+.autocomplete-option:last-child {
+  border-bottom: none;
+}
+
+.autocomplete-option strong {
+  display: block;
+  font-size: 13px;
+  color: #0f172a;
+}
+
+.autocomplete-option span {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: #64748b;
+}
+
+.autocomplete-option:hover,
+.autocomplete-option.active {
+  background: #eff6ff;
+}
+
+.autocomplete-empty {
+  padding: 12px 14px;
+  font-size: 13px;
   color: #64748b;
 }
 
@@ -1119,20 +1277,61 @@ textarea {
 }
 
 input, select {
-  padding: 10px;
-  border-radius: 8px;
-  border: 1px solid #e5e7eb;
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #d8dee8;
+  background: #ffffff;
+  color: #0f172a;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease;
+  font: inherit;
+}
+
+textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #d8dee8;
+  background: #ffffff;
+  color: #0f172a;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease;
+  font: inherit;
+}
+
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+  background: #ffffff;
+}
+
+input:disabled, select:disabled, textarea:disabled {
+  background: #f8fafc;
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
+.form-field > input,
+.form-field > select,
+.form-field > textarea {
+  width: 100%;
 }
 
 .field-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+  align-items: start;
 }
 
 .field-row > div {
   display: flex;
   flex-direction: column;
+}
+
+.field-row > .form-field,
+.grid-3 > .form-field {
+  min-width: 0;
 }
 
 .modal-actions {
@@ -1374,6 +1573,60 @@ body.theme-dark .search-result-item:hover {
   background: #17253b;
 }
 
+body.theme-dark .field-label,
+body.theme-dark .form > label {
+  color: #dbeafe;
+}
+
+body.theme-dark .field-label-row label {
+  color: #dbeafe;
+}
+
+body.theme-dark .field-hint,
+body.theme-dark .selected-record-banner span,
+body.theme-dark .autocomplete-option span,
+body.theme-dark .autocomplete-empty {
+  color: #9fb3cf;
+}
+
+body.theme-dark .selected-record-banner {
+  background: linear-gradient(180deg, #111b2e 0%, #0f172a 100%);
+  border-color: #24406a;
+}
+
+body.theme-dark .selected-record-banner strong,
+body.theme-dark .autocomplete-option strong {
+  color: #e2e8f0;
+}
+
+body.theme-dark .autocomplete-menu {
+  background: #111b2e;
+  border-color: #1f2e46;
+}
+
+body.theme-dark .autocomplete-option {
+  background: #111b2e;
+  border-bottom-color: #1f2e46;
+}
+
+body.theme-dark .autocomplete-option:hover,
+body.theme-dark .autocomplete-option.active {
+  background: #17253b;
+}
+
+body.theme-dark .autocomplete-selected-pill {
+  background: #1f2e46;
+  color: #dbeafe;
+}
+
+body.theme-dark input:focus,
+body.theme-dark select:focus,
+body.theme-dark textarea:focus {
+  background: #111b2e;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
+}
+
 body.theme-dark .page-subtitle,
 body.theme-dark .meta,
 body.theme-dark th {
@@ -1482,6 +1735,7 @@ body.theme-dark .revenue-rate {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 16px;
+  align-items: start;
 }
 
 .photo-grid {

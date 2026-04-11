@@ -13,14 +13,28 @@
 <body>
   <div id="root"></div>
   <script>
-    // When frontend is served on a separate dev port, target Django on :8000.
     (function() {
-      const { protocol, port } = window.location;
-      const isHttp = protocol === 'http:' || protocol === 'https:';
-      const isSameOriginDjango = isHttp && port === '8000';
+      const configured = String(window.__API_BASE__ || '').trim();
+      if (configured) {
+        return;
+      }
 
-      if (isSameOriginDjango) {
+      const { protocol, hostname, origin, port } = window.location;
+      const isHttp = protocol === 'http:' || protocol === 'https:';
+      const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+
+      if (isLocalHost && port === '8000') {
         window.__API_BASE__ = '/api';
+        return;
+      }
+
+      if (isLocalHost) {
+        window.__API_BASE__ = 'http://127.0.0.1:8000/api';
+        return;
+      }
+
+      if (isHttp) {
+        window.__API_BASE__ = `${origin.replace(/\/$/, '')}/api`;
         return;
       }
 

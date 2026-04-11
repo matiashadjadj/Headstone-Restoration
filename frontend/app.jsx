@@ -1,4 +1,4 @@
-const { useEffect, useMemo, useState } = React;
+const { useEffect, useMemo, useRef, useState } = React;
 
 const ROLE_CONFIGS = {
   admin: {
@@ -68,9 +68,12 @@ function getApiBase() {
   if (configured.startsWith('/')) return configured.replace(/\/+$/, '');
   if (/^https?:\/\/[^/]+/i.test(configured)) return configured.replace(/\/+$/, '');
 
-  const { protocol, port } = window.location;
+  const { protocol, hostname, origin, port } = window.location;
   const isHttp = protocol === 'http:' || protocol === 'https:';
-  if (isHttp && port === '8000') return '/api';
+  const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  if (isLocalHost && port === '8000') return '/api';
+  if (isLocalHost) return 'http://127.0.0.1:8000/api';
+  if (isHttp) return `${origin.replace(/\/$/, '')}/api`;
   return 'http://127.0.0.1:8000/api';
 }
 
@@ -3315,6 +3318,186 @@ function createMemorialFormState(overrides = {}) {
   };
 }
 
+function FormField({ label, hint, children, className = '' }) {
+  return (
+    <label className={`form-field ${className}`.trim()}>
+      <span className="field-label">{label}</span>
+      {children}
+      {hint && <span className="field-hint">{hint}</span>}
+    </label>
+  );
+}
+
+function getCemeteryLookupText(cemetery) {
+  return [
+    cemetery?.name,
+    cemetery?.address,
+    cemetery?.city,
+    cemetery?.state,
+    cemetery?.contact_name,
+    cemetery?.contact_phone,
+    cemetery?.contact_email
+  ]
+    .filter(Boolean)
+    .map((value) => normalizeLookup(value))
+    .join(' ');
+}
+
+function getCemeterySummaryText(cemetery) {
+  if (!cemetery) return 'No details available';
+  const location = [cemetery.city, cemetery.state].filter(Boolean).join(', ');
+  const address = cemetery.address || '';
+  const contact = [cemetery.contact_name, cemetery.contact_phone].filter(Boolean).join(' · ');
+  const bits = [address, location, contact].filter(Boolean);
+  return bits.length ? bits.join(' · ') : 'No additional details captured yet';
+}
+
+function CemeteryAutocompleteField({
+  cemeteries,
+  value,
+  selectedCemetery,
+  onChange,
+  onSelectCemetery,
+  onClearSelection,
+  helperText = 'Type to find an existing cemetery or keep typing to create a new one.'
+}) {
+  const containerRef = useRef(null);
+  const inputRef = useRef(null);
+  const inputIdRef = useRef(`cemetery-${Math.random().toString(36).slice(2, 10)}`);
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const query = normalizeLookup(value);
+  const suggestions = useMemo(() => {
+    const rows = Array.isArray(cemeteries) ? cemeteries : [];
+    const matches = query
+      ? rows.filter((cemetery) => getCemeteryLookupText(cemetery).includes(query))
+      : rows;
+    return matches.slice(0, 6);
+  }, [cemeteries, query]);
+
+  useEffect(() => {
+    if (activeIndex >= suggestions.length) {
+      setActiveIndex(0);
+    }
+  }, [activeIndex, suggestions.length]);
+
+  useEffect(() => {
+    function handlePointerDown(event) {
+      if (!containerRef.current || containerRef.current.contains(event.target)) return;
+      setIsOpen(false);
+    }
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+    };
+  }, []);
+
+  function handleSelect(cemetery) {
+    if (!cemetery) return;
+    onSelectCemetery?.(cemetery);
+    setIsOpen(false);
+    setActiveIndex(0);
+    window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
+  }
+
+  function handleKeyDown(event) {
+    if (event.key === 'Escape') {
+      setIsOpen(false);
+      return;
+    }
+
+    if (!suggestions.length) {
+      return;
+    }
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setActiveIndex((index) => (index + 1) % suggestions.length);
+      setIsOpen(true);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setActiveIndex((index) => (index - 1 + suggestions.length) % suggestions.length);
+      setIsOpen(true);
+    } else if (event.key === 'Enter' && isOpen) {
+      event.preventDefault();
+      handleSelect(suggestions[activeIndex] || suggestions[0]);
+    }
+  }
+
+  return (
+    <div className="cemetery-autocomplete" ref={containerRef}>
+      <div className="field-label-row">
+        <label htmlFor={inputIdRef.current}>Cemetery Name</label>
+      </div>
+      <div className="autocomplete-shell">
+        <input
+          id={inputIdRef.current}
+          ref={inputRef}
+          name="name"
+          value={value}
+          onChange={(event) => {
+            onChange(event.target.value);
+            setIsOpen(true);
+          }}
+          onFocus={() => setIsOpen(true)}
+          onKeyDown={handleKeyDown}
+          placeholder="Start typing a cemetery name"
+          autoComplete="off"
+          spellCheck="false"
+          aria-autocomplete="list"
+          aria-expanded={isOpen && suggestions.length > 0}
+        />
+        {selectedCemetery && <span className="autocomplete-selected-pill">Existing cemetery</span>}
+      </div>
+      <span className="field-hint">{helperText}</span>
+      {selectedCemetery && (
+        <div className="selected-record-banner">
+          <div>
+            <strong>{selectedCemetery.name}</strong>
+            <span>{getCemeterySummaryText(selectedCemetery)}</span>
+          </div>
+          <button className="ghost-btn" type="button" onClick={onClearSelection}>
+            Use new
+          </button>
+        </div>
+      )}
+      {isOpen && (
+        <div className="autocomplete-menu" role="listbox">
+          {suggestions.length > 0 ? (
+            suggestions.map((cemetery, index) => (
+              <button
+                key={cemetery.id}
+                type="button"
+                className={`autocomplete-option${index === activeIndex ? ' active' : ''}`}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  handleSelect(cemetery);
+                }}
+                onMouseEnter={() => setActiveIndex(index)}
+              >
+                <strong>{cemetery.name}</strong>
+                <span>{getCemeterySummaryText(cemetery)}</span>
+              </button>
+            ))
+          ) : (
+            <div className="autocomplete-empty">
+              {cemeteries.length === 0
+                ? 'No cemeteries saved yet. Keep typing to create a new one.'
+                : 'No matching cemeteries found. Keep typing to create a new one.'}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function handleDraftFieldChange(setter, event) {
   const { name, value, type, checked } = event.target;
   setter((prev) => ({
@@ -3325,126 +3508,159 @@ function handleDraftFieldChange(setter, event) {
 
 function CustomerFormFields({ form, onChange }) {
   return (
-    <>
-      <label>Full Name</label>
-      <input name="full_name" value={form.full_name} onChange={onChange} required />
+    <div className="form-stack">
+      <FormField label="Full Name">
+        <input name="full_name" value={form.full_name} onChange={onChange} required />
+      </FormField>
 
       <div className="field-row">
-        <div>
-          <label>Email</label>
+        <FormField label="Email">
           <input type="email" name="email" value={form.email} onChange={onChange} />
-        </div>
-        <div>
-          <label>Phone</label>
+        </FormField>
+        <FormField label="Phone">
           <input name="phone" value={form.phone} onChange={onChange} />
-        </div>
+        </FormField>
       </div>
 
-      <label>How They Heard About Us</label>
-      <input
-        name="how_heard_about_us"
-        value={form.how_heard_about_us}
-        onChange={onChange}
-        placeholder="Referral, cemetery office, search, repeat customer..."
-      />
+      <FormField
+        label="How They Heard About Us"
+        hint="Referral, cemetery office, search, repeat customer..."
+      >
+        <input
+          name="how_heard_about_us"
+          value={form.how_heard_about_us}
+          onChange={onChange}
+          placeholder="Referral, cemetery office, search, repeat customer..."
+        />
+      </FormField>
 
-      <label>Address Line 1</label>
-      <input name="address_line1" value={form.address_line1} onChange={onChange} />
+      <FormField label="Address Line 1">
+        <input name="address_line1" value={form.address_line1} onChange={onChange} />
+      </FormField>
 
-      <label>Address Line 2</label>
-      <input name="address_line2" value={form.address_line2} onChange={onChange} />
+      <FormField label="Address Line 2">
+        <input name="address_line2" value={form.address_line2} onChange={onChange} />
+      </FormField>
 
       <div className="grid-3">
-        <div>
-          <label>City</label>
+        <FormField label="City">
           <input name="city" value={form.city} onChange={onChange} />
-        </div>
-        <div>
-          <label>State</label>
+        </FormField>
+        <FormField label="State">
           <input name="state" value={form.state} onChange={onChange} />
-        </div>
-        <div>
-          <label>Postal Code</label>
+        </FormField>
+        <FormField label="Postal Code">
           <input name="postal_code" value={form.postal_code} onChange={onChange} />
-        </div>
+        </FormField>
       </div>
 
-      <label>Notes</label>
-      <textarea name="notes" value={form.notes} onChange={onChange} rows={4} />
-    </>
+      <FormField label="Notes">
+        <textarea name="notes" value={form.notes} onChange={onChange} rows={4} />
+      </FormField>
+    </div>
   );
 }
 
-function CemeteryFormFields({ form, onChange }) {
+function CemeteryFormFields({
+  form,
+  onChange,
+  cemeteries = [],
+  selectedCemetery = null,
+  onSelectCemetery,
+  onClearSelection,
+  onNameChange,
+  secondaryDisabled = false
+}) {
   return (
-    <>
-      <label>Cemetery Name</label>
-      <input name="name" value={form.name} onChange={onChange} required />
+    <div className="form-stack">
+      <CemeteryAutocompleteField
+        cemeteries={cemeteries}
+        value={form.name}
+        selectedCemetery={selectedCemetery}
+        onChange={(nextValue) => {
+          if (onNameChange) {
+            onNameChange(nextValue, selectedCemetery);
+            return;
+          }
+          onChange({
+            target: { name: 'name', value: nextValue, type: 'text' }
+          });
+        }}
+        onSelectCemetery={onSelectCemetery}
+        onClearSelection={onClearSelection}
+      />
 
-      <label>Address</label>
-      <input name="address" value={form.address} onChange={onChange} />
+      <FormField label="Address">
+        <input name="address" value={form.address} onChange={onChange} disabled={secondaryDisabled} />
+      </FormField>
 
       <div className="grid-3">
-        <div>
-          <label>City</label>
-          <input name="city" value={form.city} onChange={onChange} />
-        </div>
-        <div>
-          <label>State</label>
-          <input name="state" value={form.state} onChange={onChange} />
-        </div>
-        <div>
-          <label>Contact</label>
-          <input name="contact_name" value={form.contact_name} onChange={onChange} />
-        </div>
+        <FormField label="City">
+          <input name="city" value={form.city} onChange={onChange} disabled={secondaryDisabled} />
+        </FormField>
+        <FormField label="State">
+          <input name="state" value={form.state} onChange={onChange} disabled={secondaryDisabled} />
+        </FormField>
+        <FormField label="Contact">
+          <input name="contact_name" value={form.contact_name} onChange={onChange} disabled={secondaryDisabled} />
+        </FormField>
       </div>
 
       <div className="field-row">
-        <div>
-          <label>Contact Phone</label>
-          <input name="contact_phone" value={form.contact_phone} onChange={onChange} />
-        </div>
-        <div>
-          <label>Contact Email</label>
-          <input type="email" name="contact_email" value={form.contact_email} onChange={onChange} />
-        </div>
+        <FormField label="Contact Phone">
+          <input
+            name="contact_phone"
+            value={form.contact_phone}
+            onChange={onChange}
+            disabled={secondaryDisabled}
+          />
+        </FormField>
+        <FormField label="Contact Email">
+          <input
+            type="email"
+            name="contact_email"
+            value={form.contact_email}
+            onChange={onChange}
+            disabled={secondaryDisabled}
+          />
+        </FormField>
       </div>
 
-      <label>Notes</label>
-      <textarea name="notes" value={form.notes} onChange={onChange} rows={4} />
-    </>
+      <FormField label="Notes">
+        <textarea name="notes" value={form.notes} onChange={onChange} rows={4} disabled={secondaryDisabled} />
+      </FormField>
+    </div>
   );
 }
 
 function MemorialFormFields({ form, onChange, onPhotoNamesChange }) {
   return (
-    <>
-      <label>Name On Stone</label>
-      <input
-        name="name_on_stone"
-        value={form.name_on_stone}
-        onChange={onChange}
-        placeholder="John H. Andrews Bench"
-      />
+    <div className="form-stack">
+      <FormField label="Name On Stone">
+        <input
+          name="name_on_stone"
+          value={form.name_on_stone}
+          onChange={onChange}
+          placeholder="John H. Andrews Bench"
+        />
+      </FormField>
 
       <div className="field-row">
-        <div>
-          <label>Stone Type</label>
+        <FormField label="Stone Type">
           <select name="material" value={form.material} onChange={onChange}>
             {MATERIAL_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </select>
-        </div>
-        <div>
-          <label>Style</label>
+        </FormField>
+        <FormField label="Style">
           <input
             name="stone_style"
             value={form.stone_style}
             onChange={onChange}
             placeholder="Flat, slab, upright..."
           />
-        </div>
+        </FormField>
       </div>
 
       <div className="field-row checkbox-row">
@@ -3459,17 +3675,15 @@ function MemorialFormFields({ form, onChange, onPhotoNamesChange }) {
       </div>
 
       <div className="field-row">
-        <div>
-          <label>Stone Location</label>
+        <FormField label="Stone Location">
           <input
             name="location_description"
             value={form.location_description}
             onChange={onChange}
             placeholder="Section, row, landmarks..."
           />
-        </div>
-        <div>
-          <label>Approximate Age</label>
+        </FormField>
+        <FormField label="Approximate Age">
           <input
             type="number"
             min="0"
@@ -3478,32 +3692,36 @@ function MemorialFormFields({ form, onChange, onPhotoNamesChange }) {
             onChange={onChange}
             placeholder="Years"
           />
-        </div>
+        </FormField>
       </div>
 
-      <label>Vases / Flowers / Decorations</label>
-      <textarea name="decoration_notes" value={form.decoration_notes} onChange={onChange} rows={3} />
+      <FormField label="Vases / Flowers / Decorations">
+        <textarea name="decoration_notes" value={form.decoration_notes} onChange={onChange} rows={3} />
+      </FormField>
 
-      <label>Previous Cleans / Restoration Notes</label>
-      <textarea
-        name="previous_cleaning_notes"
-        value={form.previous_cleaning_notes}
-        onChange={onChange}
-        rows={3}
-      />
+      <FormField label="Previous Cleans / Restoration Notes">
+        <textarea
+          name="previous_cleaning_notes"
+          value={form.previous_cleaning_notes}
+          onChange={onChange}
+          rows={3}
+        />
+      </FormField>
 
-      <label>Additional Notes</label>
-      <textarea name="notes" value={form.notes} onChange={onChange} rows={4} />
+      <FormField label="Additional Notes">
+        <textarea name="notes" value={form.notes} onChange={onChange} rows={4} />
+      </FormField>
 
-      <label>Reference Photos</label>
-      <input
-        type="file"
-        multiple
-        onChange={(event) => {
-          const names = Array.from(event.target.files || []).map((file) => file.name);
-          onPhotoNamesChange(names);
-        }}
-      />
+      <FormField label="Reference Photos">
+        <input
+          type="file"
+          multiple
+          onChange={(event) => {
+            const names = Array.from(event.target.files || []).map((file) => file.name);
+            onPhotoNamesChange(names);
+          }}
+        />
+      </FormField>
       {form.photo_names.length > 0 && (
         <div className="detail-pill-row">
           {form.photo_names.map((name) => (
@@ -3511,7 +3729,7 @@ function MemorialFormFields({ form, onChange, onPhotoNamesChange }) {
           ))}
         </div>
       )}
-    </>
+    </div>
   );
 }
 
@@ -4231,15 +4449,6 @@ function CemeteriesPageModern() {
   const [form, setForm] = useState(createCemeteryFormState());
   const [saveState, setSaveState] = useState({ success: '' });
 
-  useEffect(() => {
-    if (!cemeteries.length) return;
-    const exists = cemeteries.some((row) => String(row.id) === String(selectedCemeteryId));
-    if (!exists) {
-      setSelectedCemeteryId(String(cemeteries[0].id));
-      setForm(createCemeteryFormState(cemeteries[0]));
-    }
-  }, [cemeteries, selectedCemeteryId]);
-
   const selectedCemetery = useMemo(
     () => cemeteries.find((cemetery) => String(cemetery.id) === String(selectedCemeteryId)) || null,
     [cemeteries, selectedCemeteryId]
@@ -4250,6 +4459,19 @@ function CemeteriesPageModern() {
     setForm(createCemeteryFormState(selectedCemetery));
     setSaveState({ success: '' });
   }, [selectedCemetery]);
+
+  function handleSelectCemetery(cemetery) {
+    if (!cemetery) return;
+    setSelectedCemeteryId(String(cemetery.id));
+    setForm(createCemeteryFormState(cemetery));
+    setSaveState({ success: '' });
+  }
+
+  function handleClearSelection() {
+    setSelectedCemeteryId('');
+    setForm(createCemeteryFormState());
+    setSaveState({ success: '' });
+  }
 
   const cemeteryMemorials = useMemo(
     () => memorials.filter((memorial) => selectedCemetery && matchesCemeteryRecord(memorial, selectedCemetery)),
@@ -4294,16 +4516,21 @@ function CemeteriesPageModern() {
             <button
               className="ghost-btn"
               type="button"
-              onClick={() => {
-                setSelectedCemeteryId('');
-                setForm(createCemeteryFormState());
-              }}
+              onClick={handleClearSelection}
             >
               New
             </button>
           </div>
           <form className="form" onSubmit={handleSave}>
-            <CemeteryFormFields form={form} onChange={(event) => handleDraftFieldChange(setForm, event)} />
+            <CemeteryFormFields
+              form={form}
+              cemeteries={cemeteries}
+              selectedCemetery={selectedCemetery}
+              onSelectCemetery={handleSelectCemetery}
+              onClearSelection={handleClearSelection}
+              onNameChange={(nextValue) => setForm((prev) => ({ ...prev, name: nextValue }))}
+              onChange={(event) => handleDraftFieldChange(setForm, event)}
+            />
             {saveState.success && <div className="card form-success"><strong>{saveState.success}</strong></div>}
             <button className="primary-btn" type="submit">Save Cemetery</button>
           </form>
@@ -4320,7 +4547,7 @@ function CemeteriesPageModern() {
                 key={cemetery.id}
                 type="button"
                 className={`record-card${String(selectedCemeteryId) === String(cemetery.id) ? ' active' : ''}`}
-                onClick={() => setSelectedCemeteryId(String(cemetery.id))}
+                onClick={() => handleSelectCemetery(cemetery)}
               >
                 <strong>{cemetery.name}</strong>
                 <span>{[cemetery.city, cemetery.state].filter(Boolean).join(', ') || 'City and state not captured yet'}</span>
@@ -4381,18 +4608,25 @@ function OnboardingPageModern() {
   const [customerForm, setCustomerForm] = useState(createCustomerFormState({
     full_name: draft.customer_name || ''
   }));
-  const [cemeteryMode, setCemeteryMode] = useState(draft.existing_cemetery_id ? 'existing' : 'new');
   const [selectedCemeteryId, setSelectedCemeteryId] = useState(String(draft.existing_cemetery_id || ''));
   const [cemeteryForm, setCemeteryForm] = useState(createCemeteryFormState());
   const [memorialForm, setMemorialForm] = useState(createMemorialFormState());
   const [submitState, setSubmitState] = useState({ loading: false, error: '', success: '' });
+  const selectedCemetery = useMemo(
+    () => cemeteries.find((cemetery) => String(cemetery.id) === String(selectedCemeteryId)) || null,
+    [cemeteries, selectedCemeteryId]
+  );
+
+  useEffect(() => {
+    if (!selectedCemetery) return;
+    setCemeteryForm(createCemeteryFormState(selectedCemetery));
+  }, [selectedCemetery]);
 
   function handleClearDraft() {
     clearOnboardingDraft();
     setCustomerMode('new');
     setSelectedCustomerId('');
     setCustomerForm(createCustomerFormState());
-    setCemeteryMode('new');
     setSelectedCemeteryId('');
     setCemeteryForm(createCemeteryFormState());
     setMemorialForm(createMemorialFormState());
@@ -4442,13 +4676,13 @@ function OnboardingPageModern() {
       });
 
       let cemeteryRecord = null;
-      if (cemeteryMode === 'existing') {
+      if (selectedCemeteryId) {
         cemeteryRecord = cemeteries.find((cemetery) => String(cemetery.id) === String(selectedCemeteryId)) || null;
         if (!cemeteryRecord) throw new Error('Select an existing cemetery.');
       } else {
         cemeteryRecord = {
           ...cemeteryForm,
-          id: cemeteryForm.id || makeLocalId('cemetery')
+          id: makeLocalId('cemetery')
         };
         upsertLocalCemetery(cemeteryRecord);
       }
@@ -4468,7 +4702,6 @@ function OnboardingPageModern() {
       setCustomerMode('new');
       setSelectedCustomerId('');
       setCustomerForm(createCustomerFormState());
-      setCemeteryMode('new');
       setSelectedCemeteryId('');
       setCemeteryForm(createCemeteryFormState());
       setMemorialForm(createMemorialFormState());
@@ -4538,37 +4771,37 @@ function OnboardingPageModern() {
           <div className="card">
             <div className="card-header">
               <h3>Cemetery</h3>
-              <div className="toggle-group">
-                <button
-                  type="button"
-                  className={`toggle-btn${cemeteryMode === 'existing' ? ' active' : ''}`}
-                  onClick={() => setCemeteryMode('existing')}
-                >
-                  Existing
-                </button>
-                <button
-                  type="button"
-                  className={`toggle-btn${cemeteryMode === 'new' ? ' active' : ''}`}
-                  onClick={() => setCemeteryMode('new')}
-                >
-                  New
-                </button>
-              </div>
+              <span className="meta">Type to pick an existing cemetery or create a new one.</span>
             </div>
-            {cemeteryMode === 'existing' && (
-              <>
-                <label>Existing Cemetery</label>
-                <select value={selectedCemeteryId} onChange={(event) => setSelectedCemeteryId(event.target.value)} required>
-                  <option value="">Select cemetery</option>
-                  {cemeteries.map((cemetery) => (
-                    <option key={cemetery.id} value={cemetery.id}>{cemetery.name}</option>
-                  ))}
-                </select>
-              </>
-            )}
-            {cemeteryMode === 'new' && (
-              <CemeteryFormFields form={cemeteryForm} onChange={(event) => handleDraftFieldChange(setCemeteryForm, event)} />
-            )}
+            <CemeteryFormFields
+              form={cemeteryForm}
+              cemeteries={cemeteries}
+              selectedCemetery={selectedCemetery}
+              onSelectCemetery={(cemetery) => {
+                setSelectedCemeteryId(String(cemetery.id));
+                setCemeteryForm(createCemeteryFormState(cemetery));
+              }}
+              onClearSelection={() => {
+                setSelectedCemeteryId('');
+                setCemeteryForm((prev) => ({ ...prev, id: '' }));
+              }}
+              onNameChange={(nextValue) => {
+                const currentSelected = selectedCemetery;
+                const shouldClearSelection = Boolean(
+                  currentSelected && normalizeLookup(currentSelected.name) !== normalizeLookup(nextValue)
+                );
+                setCemeteryForm((prev) => ({
+                  ...prev,
+                  name: nextValue,
+                  ...(shouldClearSelection ? { id: '' } : {})
+                }));
+                if (shouldClearSelection) {
+                  setSelectedCemeteryId('');
+                }
+              }}
+              onChange={(event) => handleDraftFieldChange(setCemeteryForm, event)}
+              secondaryDisabled={Boolean(selectedCemeteryId)}
+            />
           </div>
         </section>
 
