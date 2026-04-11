@@ -17,14 +17,7 @@
     (function() {
       const { protocol, port } = window.location;
       const isHttp = protocol === 'http:' || protocol === 'https:';
-      const isSameOriginDjango = isHttp && port === '8000';
-
-      if (isSameOriginDjango) {
-        window.__API_BASE__ = '/api';
-        return;
-      }
-
-      window.__API_BASE__ = 'http://127.0.0.1:8000/api';
+      window.__API_BASE__ = isHttp && port !== '8000' ? 'http://127.0.0.1:8000' : '';
     })();
   </script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>

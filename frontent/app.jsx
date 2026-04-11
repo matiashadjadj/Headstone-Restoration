@@ -70,8 +70,8 @@ function getApiBase() {
 
   const { protocol, port } = window.location;
   const isHttp = protocol === 'http:' || protocol === 'https:';
-  if (isHttp && port === '8000') return '/api';
-  return 'http://127.0.0.1:8000/api';
+  if (isHttp && port !== '8000') return 'http://127.0.0.1:8000';
+  return '';
 }
 
 const API_BASE = getApiBase();
@@ -100,7 +100,7 @@ async function apiFetch(path, options = {}) {
     }
   }
 
-  return fetch(`${API_BASE}${normalizedPath}`, {
+  return fetch(`${API_BASE}/api${normalizedPath}`, {
     ...options,
     method,
     credentials: 'include',
