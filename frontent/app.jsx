@@ -1,4 +1,4 @@
-const { useEffect, useMemo, useState } = React;
+const { useEffect, useMemo, useRef, useState } = React;
 
 const ROLE_CONFIGS = {
   admin: {
@@ -7,6 +7,7 @@ const ROLE_CONFIGS = {
     defaultRoute: 'dashboard',
     nav: [
       { id: 'dashboard', label: 'Dashboard', to: '/admin/dashboard' },
+      { id: 'onboarding', label: 'Onboard Customer', to: '/admin/onboarding' },
       { id: 'memorials', label: 'Memorials', to: '/admin/memorials' },
       { id: 'scheduling', label: 'Scheduling', to: '/admin/scheduling' },
       { id: 'users', label: 'Users & Roles', to: '/admin/users' },
@@ -25,7 +26,7 @@ const ROLE_CONFIGS = {
     defaultRoute: 'dashboard',
     nav: [
       { id: 'dashboard', label: 'Front Desk', to: '/frontdesk/dashboard' },
-      { id: 'onboarding', label: 'New Intake', to: '/frontdesk/onboarding' },
+      { id: 'onboarding', label: 'Onboard Customer', to: '/frontdesk/onboarding' },
       { id: 'customers', label: 'Customers', to: '/frontdesk/customers' },
       { id: 'memorials', label: 'Memorials', to: '/frontdesk/memorials' },
       { id: 'scheduling', label: 'Scheduling', to: '/frontdesk/scheduling' },
@@ -63,10 +64,27 @@ const ROLE_CONFIGS = {
 };
 
 // All API calls go through the same base so the frontend and Django share origin.
+function normalizeApiBase(value) {
+  const configured = String(value || '').trim();
+  if (!configured) return '';
+  if (configured === '/api') return '';
+  if (/^https?:\/\/[^/]+\/api\/?$/i.test(configured)) {
+    return configured.replace(/\/api\/?$/i, '').replace(/\/+$/, '');
+  }
+  if (/^https?:\/\/[^/]+$/i.test(configured)) {
+    return configured.replace(/\/+$/, '');
+  }
+  return configured.replace(/\/+$/, '');
+}
+
 function getApiBase() {
-  const configured = String(window.__API_BASE__ || '').trim();
-  if (configured.startsWith('/')) return configured.replace(/\/+$/, '');
-  if (/^https?:\/\/[^/]+/i.test(configured)) return configured.replace(/\/+$/, '');
+  const configured = normalizeApiBase(window.__API_BASE__);
+  if (configured) return configured;
+  const { protocol, hostname, origin, port } = window.location;
+  const isHttp = protocol === 'http:' || protocol === 'https:';
+  const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  if (isLocalHost && port !== '8000') return 'http://127.0.0.1:8000';
+  if (isHttp) return origin.replace(/\/$/, '');
   return '';
 }
 
@@ -124,6 +142,24 @@ function formatDateTimeShort(value) {
     hour: 'numeric',
     minute: '2-digit'
   });
+}
+
+function copyTextToClipboard(value) {
+  const text = String(value || '');
+  if (!text) return Promise.reject(new Error('Nothing to copy.'));
+  if (navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(text);
+  }
+  const input = document.createElement('textarea');
+  input.value = text;
+  input.setAttribute('readonly', 'readonly');
+  input.style.position = 'absolute';
+  input.style.left = '-9999px';
+  document.body.appendChild(input);
+  input.select();
+  document.execCommand('copy');
+  document.body.removeChild(input);
+  return Promise.resolve();
 }
 
 function formatDateOnly(value) {
@@ -368,6 +404,371 @@ function useDashboardData(enabled) {
   };
 }
 
+const WORKFLOW_STORE_KEY = 'hs_frontend_workflow_store_v1';
+const ONBOARDING_DRAFT_KEY = 'hs_frontend_onboarding_draft_v1';
+
+const MATERIAL_OPTIONS = [
+  { value: 'granite', label: 'Granite' },
+  { value: 'marble', label: 'Marble' },
+  { value: 'limestone', label: 'Limestone' },
+  { value: 'sandstone', label: 'Sandstone' },
+  { value: 'bronze', label: 'Bronze' },
+  { value: 'other', label: 'Other / TBD' }
+];
+
+function createEmptyWorkflowStore() {
+  return {
+    customerMeta: {},
+    cemeteryMeta: {},
+    memorialMeta: {},
+    localCemeteries: [],
+    localMemorials: []
+  };
+}
+
+function readJsonStorage(key, fallbackValue) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallbackValue;
+    return JSON.parse(raw);
+  } catch (err) {
+    return fallbackValue;
+  }
+}
+
+function writeJsonStorage(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (err) {
+    // ignore storage errors
+  }
+  return value;
+}
+
+function readWorkflowStore() {
+  const fallback = createEmptyWorkflowStore();
+  const parsed = readJsonStorage(WORKFLOW_STORE_KEY, fallback);
+  return {
+    ...fallback,
+    ...(parsed || {}),
+    customerMeta: { ...(parsed?.customerMeta || {}) },
+    cemeteryMeta: { ...(parsed?.cemeteryMeta || {}) },
+    memorialMeta: { ...(parsed?.memorialMeta || {}) },
+    localCemeteries: Array.isArray(parsed?.localCemeteries) ? parsed.localCemeteries : [],
+    localMemorials: Array.isArray(parsed?.localMemorials) ? parsed.localMemorials : []
+  };
+}
+
+function updateWorkflowStore(updater) {
+  const current = readWorkflowStore();
+  const next = typeof updater === 'function' ? updater(current) : updater;
+  writeJsonStorage(WORKFLOW_STORE_KEY, next);
+  window.dispatchEvent(new Event('hs:workflow-updated'));
+  return next;
+}
+
+function saveCustomerMeta(customerId, fields) {
+  const key = String(customerId);
+  updateWorkflowStore((store) => ({
+    ...store,
+    customerMeta: {
+      ...store.customerMeta,
+      [key]: {
+        ...(store.customerMeta[key] || {}),
+        ...(fields || {})
+      }
+    }
+  }));
+}
+
+function saveCemeteryMeta(cemeteryId, fields) {
+  const key = String(cemeteryId);
+  updateWorkflowStore((store) => ({
+    ...store,
+    cemeteryMeta: {
+      ...store.cemeteryMeta,
+      [key]: {
+        ...(store.cemeteryMeta[key] || {}),
+        ...(fields || {})
+      }
+    }
+  }));
+}
+
+function saveMemorialMeta(memorialId, fields) {
+  const key = String(memorialId);
+  updateWorkflowStore((store) => ({
+    ...store,
+    memorialMeta: {
+      ...store.memorialMeta,
+      [key]: {
+        ...(store.memorialMeta[key] || {}),
+        ...(fields || {})
+      }
+    }
+  }));
+}
+
+function upsertLocalCemetery(record) {
+  updateWorkflowStore((store) => {
+    const nextRows = [...store.localCemeteries];
+    const index = nextRows.findIndex((row) => String(row.id) === String(record.id));
+    if (index >= 0) {
+      nextRows[index] = { ...nextRows[index], ...record };
+    } else {
+      nextRows.push(record);
+    }
+    return {
+      ...store,
+      localCemeteries: nextRows
+    };
+  });
+}
+
+function upsertLocalMemorial(record) {
+  updateWorkflowStore((store) => {
+    const nextRows = [...store.localMemorials];
+    const index = nextRows.findIndex((row) => String(row.id) === String(record.id));
+    if (index >= 0) {
+      nextRows[index] = { ...nextRows[index], ...record };
+    } else {
+      nextRows.push(record);
+    }
+    return {
+      ...store,
+      localMemorials: nextRows
+    };
+  });
+}
+
+function useWorkflowStore() {
+  const [store, setStore] = useState(readWorkflowStore);
+
+  useEffect(() => {
+    function handleUpdate() {
+      setStore(readWorkflowStore());
+    }
+
+    window.addEventListener('hs:workflow-updated', handleUpdate);
+    return () => window.removeEventListener('hs:workflow-updated', handleUpdate);
+  }, []);
+
+  return store;
+}
+
+function readOnboardingDraft() {
+  const draft = readJsonStorage(ONBOARDING_DRAFT_KEY, {});
+  return draft && typeof draft === 'object' ? draft : {};
+}
+
+function saveOnboardingDraft(draft) {
+  writeJsonStorage(ONBOARDING_DRAFT_KEY, draft || {});
+}
+
+function clearOnboardingDraft() {
+  try {
+    localStorage.removeItem(ONBOARDING_DRAFT_KEY);
+  } catch (err) {
+    // ignore storage errors
+  }
+}
+
+function makeLocalId(prefix) {
+  return `local-${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeLookup(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function matchesCustomerRecord(memorial, customer) {
+  if (!memorial || !customer) return false;
+  if (memorial.customer_id != null && customer.id != null) {
+    return String(memorial.customer_id) === String(customer.id);
+  }
+  return normalizeLookup(memorial.customer) === normalizeLookup(customer.full_name);
+}
+
+function matchesCemeteryRecord(memorial, cemetery) {
+  if (!memorial || !cemetery) return false;
+  if (memorial.cemetery_id != null && cemetery.id != null) {
+    return String(memorial.cemetery_id) === String(cemetery.id);
+  }
+  return normalizeLookup(memorial.cemetery) === normalizeLookup(cemetery.name);
+}
+
+function getMaterialLabel(value) {
+  const match = MATERIAL_OPTIONS.find((option) => option.value === value);
+  return match ? match.label : 'Other / TBD';
+}
+
+function buildMergedMemorials(apiMemorials, workflowStore) {
+  const store = workflowStore || createEmptyWorkflowStore();
+  const apiRows = (Array.isArray(apiMemorials) ? apiMemorials : []).map((row) => {
+    const meta = store.memorialMeta[String(row.id)] || {};
+    const material = meta.material || 'other';
+    const photoNames = Array.isArray(meta.photo_names) ? meta.photo_names : [];
+    return {
+      ...row,
+      source: 'api',
+      customer_id: meta.customer_id ?? null,
+      cemetery_id: meta.cemetery_id ?? null,
+      name_on_stone: meta.name_on_stone || row.customer || '',
+      material,
+      material_label: getMaterialLabel(material),
+      stone_style: meta.stone_style || '',
+      has_plaque: Boolean(meta.has_plaque),
+      has_paint: Boolean(meta.has_paint),
+      decoration_notes: meta.decoration_notes || '',
+      location_description: meta.location_description || '',
+      age_years: meta.age_years || '',
+      previous_cleaning_notes: meta.previous_cleaning_notes || '',
+      notes: meta.notes || '',
+      photo_names: photoNames,
+      regional_team: meta.regional_team || (row.last_service_date ? 'Regional field team' : 'Scheduling team')
+    };
+  });
+
+  const localRows = (Array.isArray(store.localMemorials) ? store.localMemorials : []).map((row) => {
+    const material = row.material || 'other';
+    return {
+      ...row,
+      source: 'local',
+      material,
+      material_label: getMaterialLabel(material),
+      photo_names: Array.isArray(row.photo_names) ? row.photo_names : [],
+      regional_team: row.regional_team || 'Regional field team'
+    };
+  });
+
+  return [...apiRows, ...localRows].sort((a, b) => {
+    const customerCompare = String(a.customer || '').localeCompare(String(b.customer || ''));
+    if (customerCompare !== 0) return customerCompare;
+    return String(a.name_on_stone || a.customer || '').localeCompare(String(b.name_on_stone || b.customer || ''));
+  });
+}
+
+function buildMergedCustomers(apiCustomers, mergedMemorials, workflowStore) {
+  const store = workflowStore || createEmptyWorkflowStore();
+  return (Array.isArray(apiCustomers) ? apiCustomers : [])
+    .map((customer) => {
+      const meta = store.customerMeta[String(customer.id)] || {};
+      const memorialsCount = mergedMemorials.filter((memorial) => matchesCustomerRecord(memorial, customer)).length;
+      return {
+        ...customer,
+        ...meta,
+        memorials_count: memorialsCount || customer.memorials_count || 0
+      };
+    })
+    .sort((a, b) => String(a.full_name || '').localeCompare(String(b.full_name || '')));
+}
+
+function buildMergedCemeteries(apiCemeteries, mergedMemorials, workflowStore) {
+  const store = workflowStore || createEmptyWorkflowStore();
+  const apiRows = (Array.isArray(apiCemeteries) ? apiCemeteries : []).map((cemetery) => {
+    const meta = store.cemeteryMeta[String(cemetery.id)] || {};
+    const memorialsCount = mergedMemorials.filter((memorial) => matchesCemeteryRecord(memorial, { ...cemetery, ...meta })).length;
+    return {
+      ...cemetery,
+      ...meta,
+      source: 'api',
+      memorials_count: memorialsCount || cemetery.memorials_count || 0
+    };
+  });
+
+  const localRows = (Array.isArray(store.localCemeteries) ? store.localCemeteries : []).map((cemetery) => {
+    const memorialsCount = mergedMemorials.filter((memorial) => matchesCemeteryRecord(memorial, cemetery)).length;
+    return {
+      ...cemetery,
+      source: 'local',
+      active_services: cemetery.active_services || 0,
+      memorials_count: memorialsCount
+    };
+  });
+
+  return [...apiRows, ...localRows].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+}
+
+function buildRevenueChartRows(recentCompleted, scheduledServices) {
+  const now = new Date();
+  const buckets = [];
+
+  for (let offset = 5; offset >= 0; offset -= 1) {
+    const dt = new Date(now.getFullYear(), now.getMonth() - offset, 1);
+    buckets.push({
+      key: `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`,
+      label: dt.toLocaleDateString('en-US', { month: 'short' }),
+      collected: 0,
+      scheduled: 0
+    });
+  }
+
+  const indexByKey = Object.fromEntries(buckets.map((bucket) => [bucket.key, bucket]));
+
+  (Array.isArray(recentCompleted) ? recentCompleted : []).forEach((row) => {
+    const dt = new Date(row.completed_date);
+    if (Number.isNaN(dt.getTime())) return;
+    const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+    if (!indexByKey[key]) return;
+    indexByKey[key].collected += Number(row.amount || 0);
+  });
+
+  (Array.isArray(scheduledServices) ? scheduledServices : []).forEach((row) => {
+    const dt = new Date(row.scheduled_start);
+    if (Number.isNaN(dt.getTime())) return;
+    const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+    if (!indexByKey[key]) return;
+    indexByKey[key].scheduled += Number(row.price || 0);
+  });
+
+  return buckets;
+}
+
+function getOnboardingPathForCurrentRole() {
+  const normalized = normalizePath(window.location.hash || '');
+  const segments = normalized.replace(/^\/+/, '').split('/').filter(Boolean);
+  const role = ROLE_CONFIGS[segments[0]] ? segments[0] : 'frontdesk';
+  return `${ROLE_CONFIGS[role].basePath}/onboarding`;
+}
+
+function openOnboardingWorkflow(draft = {}) {
+  saveOnboardingDraft(draft);
+  window.location.hash = getOnboardingPathForCurrentRole();
+}
+
+function RevenueSnapshotChart({ rows }) {
+  const data = Array.isArray(rows) ? rows : [];
+  const maxValue = data.reduce((max, row) => Math.max(max, row.collected || 0, row.scheduled || 0), 0);
+
+  if (!data.length || maxValue <= 0) {
+    return <div className="chart-placeholder">Revenue graph will fill in as completed and scheduled jobs accumulate.</div>;
+  }
+
+  return (
+    <div className="revenue-chart">
+      {data.map((row) => (
+        <div key={row.key} className="revenue-row">
+          <span className="revenue-month">{row.label}</span>
+          <div className="revenue-bars">
+            <div
+              className="revenue-bar collected"
+              style={{ width: `${Math.max(12, (row.collected / maxValue) * 100)}%` }}
+            >
+              {row.collected > 0 ? `Collected ${formatCurrency(row.collected)}` : 'Collected'}
+            </div>
+            <div
+              className="revenue-bar scheduled"
+              style={{ width: `${Math.max(12, (row.scheduled / maxValue) * 100)}%` }}
+            >
+              {row.scheduled > 0 ? `Scheduled ${formatCurrency(row.scheduled)}` : 'Scheduled'}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const ROUTES = {
   admin: {
     dashboard: DashboardPage,
@@ -417,6 +818,7 @@ function getServiceTypeLabel(service) {
 
 const LOGIN_PATH = '/login';
 const SETUP_PASSWORD_PATH = '/setup-password';
+const PUBLIC_SURVEY_PREFIX = '/survey/';
 
 function getDefaultPathForRole(role) {
   const config = ROLE_CONFIGS[role] || ROLE_CONFIGS.admin;
@@ -510,6 +912,16 @@ function parseRoute(path, role) {
       page: 'setup-password',
       config: null,
       canonicalPath: SETUP_PASSWORD_PATH
+    };
+  }
+  if (normalized.startsWith(PUBLIC_SURVEY_PREFIX)) {
+    const surveyToken = normalized.slice(PUBLIC_SURVEY_PREFIX.length).split('/').filter(Boolean)[0] || '';
+    return {
+      role: null,
+      page: 'public-survey',
+      config: null,
+      canonicalPath: surveyToken ? `${PUBLIC_SURVEY_PREFIX}${surveyToken}` : PUBLIC_SURVEY_PREFIX,
+      surveyToken
     };
   }
 
@@ -649,6 +1061,233 @@ function DashboardPage() {
         </div>
       </section>
     </>
+  );
+}
+
+function PublicSurveyPage({ surveyToken }) {
+  const [surveyState, setSurveyState] = useState({ loading: true, error: '', data: null });
+  const [submitState, setSubmitState] = useState({ loading: false, error: '', success: '' });
+  const [form, setForm] = useState({
+    customer_name: '',
+    email: '',
+    phone: '',
+    cemetery_name: '',
+    cemetery_address: '',
+    section: '',
+    row: '',
+    plot_number: '',
+    grave_number: '',
+    gps_lat: '',
+    gps_lng: '',
+    locating_notes: '',
+    extra_notes: '',
+    photo: null
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSurvey() {
+      if (!surveyToken) {
+        setSurveyState({ loading: false, error: 'Survey link is missing a token.', data: null });
+        return;
+      }
+
+      try {
+        const res = await apiFetch(`/public/surveys/${encodeURIComponent(surveyToken)}/`);
+        let payload = null;
+        try {
+          payload = await res.json();
+        } catch (error) {
+          payload = null;
+        }
+        if (!res.ok) throw new Error(formatApiError(payload, `Survey lookup failed (${res.status})`));
+        if (!cancelled) setSurveyState({ loading: false, error: '', data: payload });
+      } catch (err) {
+        if (!cancelled) setSurveyState({ loading: false, error: err.message || 'Failed to load survey.', data: null });
+      }
+    }
+
+    loadSurvey();
+    return () => { cancelled = true; };
+  }, [surveyToken]);
+
+  function updateField(name, value) {
+    setForm((prev) => ({ ...prev, [name]: value }));
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setSubmitState({ loading: true, error: '', success: '' });
+
+    const latValue = String(form.gps_lat || '').trim();
+    const lngValue = String(form.gps_lng || '').trim();
+    if ((latValue && !lngValue) || (!latValue && lngValue)) {
+      setSubmitState({ loading: false, error: 'Enter both GPS fields or leave both blank.', success: '' });
+      return;
+    }
+
+    let gpsLat = '';
+    let gpsLng = '';
+    if (latValue && lngValue) {
+      const parsedLat = parseCoordinate(latValue, 'lat');
+      const parsedLng = parseCoordinate(lngValue, 'lng');
+      if (!parsedLat.ok || !parsedLng.ok) {
+        setSubmitState({
+          loading: false,
+          error: parsedLat.error || parsedLng.error || 'Invalid GPS coordinates.',
+          success: ''
+        });
+        return;
+      }
+      gpsLat = String(parsedLat.value);
+      gpsLng = String(parsedLng.value);
+    }
+
+    const payload = new FormData();
+    Object.entries(form).forEach(([key, value]) => {
+      if (key === 'photo') return;
+      payload.append(key, value == null ? '' : String(value));
+    });
+    payload.set('gps_lat', gpsLat);
+    payload.set('gps_lng', gpsLng);
+    if (form.photo) payload.append('photo', form.photo);
+
+    try {
+      const res = await apiFetch(`/public/surveys/${encodeURIComponent(surveyToken)}/`, {
+        method: 'POST',
+        body: payload
+      });
+      let json = null;
+      try {
+        json = await res.json();
+      } catch (error) {
+        json = null;
+      }
+      if (!res.ok) throw new Error(formatApiError(json, `Submit failed (${res.status})`));
+      setSurveyState((prev) => ({
+        loading: false,
+        error: '',
+        data: prev.data
+          ? { ...prev.data, status: 'submitted', submitted_at: json.submitted_at || new Date().toISOString() }
+          : prev.data
+      }));
+      setSubmitState({ loading: false, error: '', success: 'Your information has been submitted.' });
+    } catch (err) {
+      setSubmitState({ loading: false, error: err.message || 'Failed to submit survey.', success: '' });
+    }
+  }
+
+  const survey = surveyState.data;
+  const isSubmitted = survey?.status === 'submitted';
+
+  return (
+    <div className="public-page-shell">
+      <div className="public-page-card">
+        <div className="public-page-header">
+          <span className="tag">Headstone Restoration</span>
+          <h1 className="page-title">Customer Survey</h1>
+          <p className="page-subtitle">Please share the location details for this headstone. No login is required.</p>
+        </div>
+
+        {surveyState.loading && <p className="meta">Loading survey...</p>}
+        {surveyState.error && <div className="form-error">{surveyState.error}</div>}
+
+        {!surveyState.loading && !surveyState.error && survey && (
+          <>
+            <div className="public-survey-summary">
+              <div>
+                <strong>Job</strong>
+                <span>{survey.service_name || 'Service'}</span>
+              </div>
+              <div>
+                <strong>Cemetery</strong>
+                <span>{survey.cemetery_name || 'Not provided yet'}</span>
+              </div>
+              <div>
+                <strong>Status</strong>
+                <span>{survey.status || 'pending'}</span>
+              </div>
+            </div>
+
+            {isSubmitted ? (
+              <div className="card form-success">
+                <strong>Survey already submitted.</strong>
+                <p className="meta">Submitted {formatDateTimeShort(survey.submitted_at)}.</p>
+              </div>
+            ) : (
+              <form className="form" onSubmit={handleSubmit}>
+                <label>Name</label>
+                <input value={form.customer_name} onChange={(event) => updateField('customer_name', event.target.value)} required />
+
+                <div className="field-row">
+                  <div>
+                    <label>Email</label>
+                    <input type="email" value={form.email} onChange={(event) => updateField('email', event.target.value)} />
+                  </div>
+                  <div>
+                    <label>Phone</label>
+                    <input value={form.phone} onChange={(event) => updateField('phone', event.target.value)} />
+                  </div>
+                </div>
+
+                <label>Cemetery Name</label>
+                <input value={form.cemetery_name} onChange={(event) => updateField('cemetery_name', event.target.value)} />
+
+                <label>Cemetery Address</label>
+                <input value={form.cemetery_address} onChange={(event) => updateField('cemetery_address', event.target.value)} />
+
+                <div className="field-row field-row-4">
+                  <div>
+                    <label>Section</label>
+                    <input value={form.section} onChange={(event) => updateField('section', event.target.value)} />
+                  </div>
+                  <div>
+                    <label>Row</label>
+                    <input value={form.row} onChange={(event) => updateField('row', event.target.value)} />
+                  </div>
+                  <div>
+                    <label>Plot</label>
+                    <input value={form.plot_number} onChange={(event) => updateField('plot_number', event.target.value)} />
+                  </div>
+                  <div>
+                    <label>Grave #</label>
+                    <input value={form.grave_number} onChange={(event) => updateField('grave_number', event.target.value)} />
+                  </div>
+                </div>
+
+                <div className="field-row">
+                  <div>
+                    <label>GPS Latitude</label>
+                    <input value={form.gps_lat} onChange={(event) => updateField('gps_lat', event.target.value)} placeholder="40.730610" />
+                  </div>
+                  <div>
+                    <label>GPS Longitude</label>
+                    <input value={form.gps_lng} onChange={(event) => updateField('gps_lng', event.target.value)} placeholder="-73.935242" />
+                  </div>
+                </div>
+                <p className="meta">Enter both GPS fields together if you have them.</p>
+
+                <label>Notes For Finding The Headstone</label>
+                <textarea rows="4" value={form.locating_notes} onChange={(event) => updateField('locating_notes', event.target.value)} />
+
+                <label>Extra Notes</label>
+                <textarea rows="4" value={form.extra_notes} onChange={(event) => updateField('extra_notes', event.target.value)} />
+
+                <label>Optional Photo</label>
+                <input type="file" accept="image/*" onChange={(event) => updateField('photo', event.target.files?.[0] || null)} />
+
+                {submitState.error && <div className="form-error">{submitState.error}</div>}
+                {submitState.success && <div className="card form-success"><strong>{submitState.success}</strong></div>}
+                <button className="primary-btn" type="submit" disabled={submitState.loading}>
+                  {submitState.loading ? 'Submitting...' : 'Submit Information'}
+                </button>
+              </form>
+            )}
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -879,6 +1518,8 @@ function SchedulingPage() {
   const [createLocatingNotes, setCreateLocatingNotes] = useState('');
   const [createCustomerNotes, setCreateCustomerNotes] = useState('');
   const [createState, setCreateState] = useState({ loading: false, error: '', success: '' });
+  const [surveyState, setSurveyState] = useState({ loading: false, error: '', data: null });
+  const [surveyActionState, setSurveyActionState] = useState({ loading: false, error: '', success: '' });
 
   useEffect(() => {
     setServices(Array.isArray(servicesState.data) ? servicesState.data : []);
@@ -1188,6 +1829,74 @@ function SchedulingPage() {
     }
   }, [selectedServiceId, schedulableServices]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSurveyDetail() {
+      if (!selectedServiceId) {
+        setSurveyState({ loading: false, error: '', data: null });
+        return;
+      }
+
+      setSurveyState((prev) => ({ loading: true, error: '', data: prev.data }));
+      try {
+        const res = await apiFetch(`/manage/services/${selectedServiceId}/survey/`);
+        const json = await res.json();
+        if (!res.ok) throw new Error(formatApiError(json, `Survey lookup failed (${res.status})`));
+        if (!cancelled) setSurveyState({ loading: false, error: '', data: json });
+      } catch (err) {
+        if (!cancelled) setSurveyState({ loading: false, error: err.message || 'Failed to load survey status.', data: null });
+      }
+    }
+
+    loadSurveyDetail();
+    return () => { cancelled = true; };
+  }, [selectedServiceId]);
+
+  async function handleGenerateSurveyLink() {
+    if (!selectedServiceId) {
+      setSurveyActionState({ loading: false, error: 'Select a job first.', success: '' });
+      return;
+    }
+
+    setSurveyActionState({ loading: true, error: '', success: '' });
+    try {
+      const res = await apiFetch(`/manage/services/${selectedServiceId}/survey/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(formatApiError(json, `Survey link failed (${res.status})`));
+      setSurveyState({ loading: false, error: '', data: json });
+      if (json.service) {
+        setServices((prev) => prev.map((item) => (item.id === json.service.id ? json.service : item)));
+      }
+      setSurveyActionState({
+        loading: false,
+        error: '',
+        success: json.detail || (json.request?.status === 'submitted' ? 'Survey was already submitted.' : 'Survey sent.')
+      });
+    } catch (err) {
+      setSurveyActionState({ loading: false, error: err.message || 'Failed to generate survey link.', success: '' });
+    }
+  }
+
+  async function handleCopySurveyLink() {
+    const publicUrl = surveyState.data?.public_url || '';
+    try {
+      await copyTextToClipboard(publicUrl);
+      setSurveyActionState({ loading: false, error: '', success: 'Survey link copied.' });
+    } catch (err) {
+      setSurveyActionState({ loading: false, error: err.message || 'Failed to copy survey link.', success: '' });
+    }
+  }
+
+  const surveyDetail = surveyState.data;
+  const surveyRequest = surveyDetail?.request || null;
+  const surveySubmission = surveyDetail?.submission || null;
+  const surveyStatus = selectedService?.survey_status || surveyRequest?.status || 'not_sent';
+
   return (
     <>
       <div className="page-heading page-heading-actions">
@@ -1418,6 +2127,100 @@ function SchedulingPage() {
         </div>
       </section>
 
+      <section className="grid-2">
+        <div className="card">
+              <div className="card-header">
+            <div>
+              <h3>Customer Survey</h3>
+              <p className="meta">Send or resend the customer survey from here when you want to collect details by email.</p>
+            </div>
+          </div>
+          {!selectedService && <p className="meta">Select a job to review or resend its customer survey.</p>}
+          {selectedService && (
+            <>
+              <div className="survey-status-grid">
+                <div className="survey-status-item">
+                  <strong>Status</strong>
+                  <span className="tag">{surveyStatus}</span>
+                </div>
+                <div className="survey-status-item">
+                  <strong>Sent</strong>
+                  <span>{surveyRequest?.sent_at ? formatDateTimeShort(surveyRequest.sent_at) : 'Not sent'}</span>
+                </div>
+                <div className="survey-status-item">
+                  <strong>Expires</strong>
+                  <span>{surveyRequest?.expires_at ? formatDateTimeShort(surveyRequest.expires_at) : '—'}</span>
+                </div>
+                <div className="survey-status-item">
+                  <strong>Submitted</strong>
+                  <span>{surveyRequest?.submitted_at ? formatDateTimeShort(surveyRequest.submitted_at) : '—'}</span>
+                </div>
+              </div>
+
+              {surveyState.loading && <p className="meta">Loading survey details...</p>}
+              {surveyState.error && <div className="form-error">{surveyState.error}</div>}
+
+              {!surveyState.loading && (
+                <>
+                  <div className="survey-link-box">
+                    <label>Public Survey Link</label>
+                    <input type="text" value={surveyDetail?.public_url || ''} readOnly placeholder="Survey link will appear here after you send it" />
+                  </div>
+
+                  {surveyActionState.error && <div className="form-error">{surveyActionState.error}</div>}
+                  {surveyActionState.success && <div className="card form-success"><strong>{surveyActionState.success}</strong></div>}
+
+                  <div className="modal-actions">
+                    <button className="primary-btn" type="button" onClick={handleGenerateSurveyLink} disabled={surveyActionState.loading}>
+                      {surveyActionState.loading ? 'Working...' : surveyRequest ? 'Resend Survey Link' : 'Send Survey Link'}
+                    </button>
+                    <button
+                      className="ghost-btn"
+                      type="button"
+                      onClick={handleCopySurveyLink}
+                      disabled={!surveyDetail?.public_url}
+                    >
+                      Copy Link
+                    </button>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="card">
+              <div className="card-header">
+            <div>
+              <h3>Survey Review</h3>
+              <p className="meta">Customer-submitted data is applied to the system automatically after submission and is shown here for reference.</p>
+            </div>
+          </div>
+          {!selectedService && <p className="meta">Select a job to review any submitted survey data.</p>}
+          {selectedService && !surveySubmission && <p className="meta">No survey submission has been received for this job yet.</p>}
+          {selectedService && surveySubmission && (
+            <div className="survey-review-grid">
+              <div><strong>Name</strong><span>{surveySubmission.customer_name || '—'}</span></div>
+              <div><strong>Email</strong><span>{surveySubmission.email || '—'}</span></div>
+              <div><strong>Phone</strong><span>{surveySubmission.phone || '—'}</span></div>
+              <div><strong>Cemetery</strong><span>{surveySubmission.cemetery_name || '—'}</span></div>
+              <div><strong>Address</strong><span>{surveySubmission.cemetery_address || '—'}</span></div>
+              <div><strong>Plot</strong><span>{[surveySubmission.section, surveySubmission.row, surveySubmission.plot_number, surveySubmission.grave_number].filter(Boolean).join(' / ') || '—'}</span></div>
+              <div><strong>GPS</strong><span>{surveySubmission.gps_lat != null && surveySubmission.gps_lng != null ? `${surveySubmission.gps_lat}, ${surveySubmission.gps_lng}` : '—'}</span></div>
+              <div><strong>Submitted</strong><span>{formatDateTimeShort(surveySubmission.created_at)}</span></div>
+              <div className="survey-review-block"><strong>Locating Notes</strong><span>{surveySubmission.locating_notes || '—'}</span></div>
+              <div className="survey-review-block"><strong>Extra Notes</strong><span>{surveySubmission.extra_notes || '—'}</span></div>
+              {surveySubmission.photo_url && (
+                <div className="survey-review-block">
+                  <strong>Photo</strong>
+                  <a href={surveySubmission.photo_url} target="_blank" rel="noreferrer">Open uploaded photo</a>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </section>
+
       <div className="card">
         <h3>All Jobs</h3>
         <div className="table-scroll">
@@ -1433,14 +2236,15 @@ function SchedulingPage() {
                 <th>Technician</th>
                 <th>Price</th>
                 <th>GPS</th>
+                <th>Survey</th>
               </tr>
             </thead>
             <tbody>
               {servicesState.loading && (
-                <tr><td colSpan="9" className="meta">Loading jobs...</td></tr>
+                <tr><td colSpan="10" className="meta">Loading jobs...</td></tr>
               )}
               {!servicesState.loading && services.length === 0 && (
-                <tr><td colSpan="9" className="meta">No jobs found yet.</td></tr>
+                <tr><td colSpan="10" className="meta">No jobs found yet.</td></tr>
               )}
               {!servicesState.loading && services.map((svc) => (
                 <tr
@@ -1461,6 +2265,7 @@ function SchedulingPage() {
                       ? `${svc.gps_lat}, ${svc.gps_lng}`
                       : '—'}
                   </td>
+                  <td><span className="tag">{svc.survey_status || 'not_sent'}</span></td>
                 </tr>
               ))}
             </tbody>
@@ -1874,12 +2679,17 @@ function UsersAdminPage() {
                     <label className="staff-field staff-active-toggle">
                       <span className="staff-field-label">Account</span>
                       <div className="staff-active-toggle-row">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(activeDrafts[row.id])}
-                          onChange={(e) => setActiveDrafts((p) => ({ ...p, [row.id]: e.target.checked }))}
-                        />
-                        <em>{Boolean(activeDrafts[row.id]) ? 'Enabled' : 'Disabled'}</em>
+                        <em className={Boolean(activeDrafts[row.id]) ? 'is-active' : ''}>
+                          {Boolean(activeDrafts[row.id]) ? 'Enabled' : 'Disabled'}
+                        </em>
+                        <span className="checkbox-switch checkbox-switch-sm">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(activeDrafts[row.id])}
+                            onChange={(e) => setActiveDrafts((p) => ({ ...p, [row.id]: e.target.checked }))}
+                          />
+                          <span className="checkbox-switch-track" aria-hidden="true"></span>
+                        </span>
                       </div>
                     </label>
                   </div>
@@ -2445,6 +3255,7 @@ function FrontDeskDashboardPage() {
 function EmailsPage() {
   const customerState = useApi('/customers/', []);
   const [selectedCustomerIds, setSelectedCustomerIds] = useState([]);
+  const [manualRecipients, setManualRecipients] = useState('');
   const [subject, setSubject] = useState('Service update for {{client_name}}');
   const [body, setBody] = useState(
     'Hello {{client_name}},\n\n'
@@ -2459,6 +3270,25 @@ function EmailsPage() {
     () => (customerState.data || []).filter((customer) => Boolean(customer.email)),
     [customerState.data]
   );
+
+  const selectedCustomers = useMemo(
+    () => customersWithEmail.filter((customer) => selectedCustomerIds.includes(customer.id)),
+    [customersWithEmail, selectedCustomerIds]
+  );
+
+  const parsedManualRecipients = useMemo(() => {
+    return manualRecipients
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const match = line.match(/^(.*?)<([^>]+)>$/);
+        if (match) {
+          return { raw: line, name: match[1].trim().replace(/^"|"$/g, ''), email: match[2].trim() };
+        }
+        return { raw: line, name: '', email: line };
+      });
+  }, [manualRecipients]);
 
   function toggleCustomer(customerId) {
     setSelectedCustomerIds((prev) => {
@@ -2479,12 +3309,23 @@ function EmailsPage() {
     event.preventDefault();
     setSendState({ loading: true, error: '', result: null });
 
-    if (!selectedCustomerIds.length) {
-      setSendState({ loading: false, error: 'Select at least one customer.', result: null });
+    if (!selectedCustomerIds.length && !parsedManualRecipients.length) {
+      setSendState({ loading: false, error: 'Add at least one recipient.', result: null });
       return;
     }
     if (!subject.trim() || !body.trim()) {
       setSendState({ loading: false, error: 'Subject and body are required.', result: null });
+      return;
+    }
+
+    const manualErrors = parsedManualRecipients
+      .map((recipient) => {
+        const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient.email);
+        return emailOk ? '' : `Invalid recipient: ${recipient.raw}`;
+      })
+      .filter(Boolean);
+    if (manualErrors.length) {
+      setSendState({ loading: false, error: manualErrors[0], result: null });
       return;
     }
 
@@ -2494,12 +3335,16 @@ function EmailsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           customer_ids: selectedCustomerIds,
+          recipients: parsedManualRecipients.map((recipient) => ({
+            email: recipient.email,
+            name: recipient.name
+          })),
           subject,
           body
         })
       });
       const json = await res.json();
-      if (!res.ok) {
+      if (!res.ok && res.status !== 207) {
         throw new Error(json.detail || `Send failed (${res.status})`);
       }
       setSendState({ loading: false, error: '', result: json });
@@ -2511,7 +3356,7 @@ function EmailsPage() {
   return (
     <>
       <h1 className="page-title">Email Center</h1>
-      <p className="page-subtitle">Send personalized client emails from headstone@restoration.com.</p>
+      <p className="page-subtitle">Send real outbound emails to customers or ad hoc recipients from one internal workflow.</p>
 
       {customerState.error && <div className="card warn">Backend error: {customerState.error}</div>}
 
@@ -2564,6 +3409,18 @@ function EmailsPage() {
         <div className="card">
           <h3>Compose</h3>
           <form className="form" onSubmit={handleSend}>
+            <label>Manual Recipients</label>
+            <textarea
+              value={manualRecipients}
+              onChange={(event) => setManualRecipients(event.target.value)}
+              rows={4}
+              placeholder={'One per line\nfriend@example.com\nJane Doe <jane@example.com>'}
+              style={{ padding: '10px', borderRadius: '8px', border: '1px solid #e5e7eb' }}
+            />
+            <p className="meta">
+              Send to selected customers and/or manual recipients. Manual recipients support `Name &lt;email@example.com&gt;`.
+            </p>
+
             <label>Subject</label>
             <input
               type="text"
@@ -2581,8 +3438,13 @@ function EmailsPage() {
             />
 
             <p className="meta">Tokens: {'{{client_name}}'}, {'{{customer_name}}'}, {'{{first_name}}'}, {'{{email}}'}</p>
+            <p className="meta">
+              Ready to send to {selectedCustomers.length + parsedManualRecipients.length} recipient
+              {selectedCustomers.length + parsedManualRecipients.length === 1 ? '' : 's'}.
+            </p>
 
             {sendState.error && <div className="form-error">{sendState.error}</div>}
+            {sendState.loading && <div className="card form-success"><strong>Sending emails...</strong></div>}
             <button className="primary-btn" type="submit" disabled={sendState.loading}>
               {sendState.loading ? 'Sending...' : 'Send Emails'}
             </button>
@@ -2597,8 +3459,37 @@ function EmailsPage() {
           <p className="meta">
             Sent: {sendState.result.sent_count} · Skipped: {sendState.result.skipped_count} · Failed: {sendState.result.failed_count}
           </p>
+          {sendState.result.ok && (
+            <div className="card form-success"><strong>Emails sent successfully.</strong></div>
+          )}
           {sendState.result.failed_count > 0 && (
             <div className="form-error">Some emails failed. Check backend logs/SMTP configuration.</div>
+          )}
+          {sendState.result.sent?.length > 0 && (
+            <div className="compact-stack" style={{ marginTop: '12px' }}>
+              {sendState.result.sent.map((row, index) => (
+                <div key={`${row.email}-${index}`} className="queue-row">
+                  <strong>OK</strong>
+                  <div>
+                    <div>{row.name || row.email}</div>
+                    <span>{row.email}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {sendState.result.failed?.length > 0 && (
+            <div className="compact-stack" style={{ marginTop: '12px' }}>
+              {sendState.result.failed.map((row, index) => (
+                <div key={`${row.email}-${index}`} className="queue-row">
+                  <strong>!</strong>
+                  <div>
+                    <div>{row.name || row.email}</div>
+                    <span>{row.error}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -3135,6 +4026,7 @@ function EmployeeSchedulingPage() {
   const servicesState = useApi('/scheduling/services/', [], true, { refreshEvent: 'hs:schedule-updated' });
   const [services, setServices] = useState([]);
   const [completeState, setCompleteState] = useState({ loading: false, error: '', success: '' });
+  const [uploadState, setUploadState] = useState({ loading: false, error: '', success: '', serviceId: null });
   const [selectedServiceId, setSelectedServiceId] = useState('');
 
   useEffect(() => {
@@ -3186,14 +4078,57 @@ function EmployeeSchedulingPage() {
     }
   }
 
+  async function handlePhotoChange(serviceId, event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setUploadState({ loading: true, error: '', success: '', serviceId });
+    try {
+      const formData = new FormData();
+      formData.append('image', file);
+      formData.append('photo_type', 'during');
+
+      const res = await apiFetch(`/manager/services/${serviceId}/photos/`, {
+        method: 'POST',
+        body: formData
+      });
+      const raw = await res.text();
+      let payload = raw;
+      try {
+        payload = raw ? JSON.parse(raw) : null;
+      } catch (error) {
+        payload = raw;
+      }
+      if (!res.ok) {
+        throw new Error(formatApiError(payload, `Upload failed (${res.status})`));
+      }
+      window.dispatchEvent(new Event('hs:photos-updated'));
+      setUploadState({
+        loading: false,
+        error: '',
+        success: 'Photo uploaded.',
+        serviceId: null,
+      });
+    } catch (err) {
+      setUploadState({
+        loading: false,
+        error: err.message || 'Failed to upload photo.',
+        success: '',
+        serviceId: null,
+      });
+    } finally {
+      event.target.value = '';
+    }
+  }
+
   return (
     <>
       <h1 className="page-title">My Schedule</h1>
       <p className="page-subtitle">Crew assignments and upcoming services.</p>
-      {(servicesState.error || completeState.error) && (
-        <div className="card warn">Backend error: {completeState.error || servicesState.error}</div>
+      {(servicesState.error || completeState.error || uploadState.error) && (
+        <div className="card warn">Backend error: {uploadState.error || completeState.error || servicesState.error}</div>
       )}
       {completeState.success && <div className="card success">{completeState.success}</div>}
+      {uploadState.success && <div className="card success">{uploadState.success}</div>}
 
       <div className="card">
         <h3>Future Jobs</h3>
@@ -3227,6 +4162,17 @@ function EmployeeSchedulingPage() {
                 >
                   {completeState.loading ? 'Saving...' : 'Completed'}
                 </button>
+                <label className="ghost-btn file-upload-btn">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => handlePhotoChange(svc.id, event)}
+                    disabled={uploadState.loading}
+                    onClick={(event) => event.stopPropagation()}
+                    hidden
+                  />
+                  {uploadState.loading && uploadState.serviceId === svc.id ? 'Uploading...' : 'Add Photo'}
+                </label>
               </li>
             ))}
           </ul>
@@ -3296,8 +4242,8 @@ function EmployeeSchedulingPage() {
               <div className="survey-review-block"><strong>Customer Notes</strong><span>{selectedService.customer_extra_notes || '—'}</span></div>
             </div>
 
-            {selectedService.status !== 'completed' && (
-              <div className="modal-actions">
+            <div className="modal-actions">
+              {selectedService.status !== 'completed' && (
                 <button
                   className="primary-btn"
                   type="button"
@@ -3306,8 +4252,18 @@ function EmployeeSchedulingPage() {
                 >
                   {completeState.loading ? 'Saving...' : 'Completed'}
                 </button>
-              </div>
-            )}
+              )}
+              <label className="ghost-btn file-upload-btn">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => handlePhotoChange(selectedService.id, event)}
+                  disabled={uploadState.loading}
+                  hidden
+                />
+                {uploadState.loading && uploadState.serviceId === selectedService.id ? 'Uploading...' : 'Add Photo'}
+              </label>
+            </div>
           </div>
         </div>
       )}
@@ -3593,6 +4549,1584 @@ function UserSettingsPage({ sessionUser, onSessionUserUpdate, hideHeader = false
   );
 }
 
+function createCustomerFormState(overrides = {}) {
+  return {
+    full_name: '',
+    email: '',
+    phone: '',
+    how_heard_about_us: '',
+    address_line1: '',
+    address_line2: '',
+    city: '',
+    state: '',
+    postal_code: '',
+    notes: '',
+    ...overrides
+  };
+}
+
+function createCemeteryFormState(overrides = {}) {
+  return {
+    id: '',
+    name: '',
+    address: '',
+    city: '',
+    state: '',
+    contact_name: '',
+    contact_phone: '',
+    contact_email: '',
+    notes: '',
+    ...overrides
+  };
+}
+
+function createMemorialFormState(overrides = {}) {
+  return {
+    id: '',
+    customer_id: '',
+    customer: '',
+    cemetery_id: '',
+    cemetery: '',
+    name_on_stone: '',
+    material: 'other',
+    stone_style: '',
+    has_plaque: false,
+    has_paint: false,
+    decoration_notes: '',
+    location_description: '',
+    age_years: '',
+    previous_cleaning_notes: '',
+    notes: '',
+    photo_names: [],
+    regional_team: '',
+    last_service_date: '',
+    ...overrides
+  };
+}
+
+function FormField({ label, hint, children, className = '' }) {
+  return (
+    <label className={`form-field ${className}`.trim()}>
+      <span className="field-label">{label}</span>
+      {children}
+      {hint && <span className="field-hint">{hint}</span>}
+    </label>
+  );
+}
+
+function getCemeteryLookupText(cemetery) {
+  return [
+    cemetery?.name,
+    cemetery?.address,
+    cemetery?.city,
+    cemetery?.state,
+    cemetery?.contact_name,
+    cemetery?.contact_phone,
+    cemetery?.contact_email
+  ]
+    .filter(Boolean)
+    .map((value) => normalizeLookup(value))
+    .join(' ');
+}
+
+function getCemeterySummaryText(cemetery) {
+  if (!cemetery) return 'No details available';
+  const location = [cemetery.city, cemetery.state].filter(Boolean).join(', ');
+  const address = cemetery.address || '';
+  const contact = [cemetery.contact_name, cemetery.contact_phone].filter(Boolean).join(' · ');
+  const bits = [address, location, contact].filter(Boolean);
+  return bits.length ? bits.join(' · ') : 'No additional details captured yet';
+}
+
+function CemeteryAutocompleteField({
+  cemeteries,
+  value,
+  selectedCemetery,
+  onChange,
+  onSelectCemetery,
+  onClearSelection,
+  helperText = 'Type to find an existing cemetery or keep typing to create a new one.'
+}) {
+  const containerRef = useRef(null);
+  const inputRef = useRef(null);
+  const inputIdRef = useRef(`cemetery-${Math.random().toString(36).slice(2, 10)}`);
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const query = normalizeLookup(value);
+  const suggestions = useMemo(() => {
+    const rows = Array.isArray(cemeteries) ? cemeteries : [];
+    const matches = query
+      ? rows.filter((cemetery) => getCemeteryLookupText(cemetery).includes(query))
+      : rows;
+    return matches.slice(0, 6);
+  }, [cemeteries, query]);
+
+  useEffect(() => {
+    if (activeIndex >= suggestions.length) {
+      setActiveIndex(0);
+    }
+  }, [activeIndex, suggestions.length]);
+
+  useEffect(() => {
+    function handlePointerDown(event) {
+      if (!containerRef.current || containerRef.current.contains(event.target)) return;
+      setIsOpen(false);
+    }
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+    };
+  }, []);
+
+  function handleSelect(cemetery) {
+    if (!cemetery) return;
+    onSelectCemetery?.(cemetery);
+    setIsOpen(false);
+    setActiveIndex(0);
+    window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
+  }
+
+  function handleKeyDown(event) {
+    if (event.key === 'Escape') {
+      setIsOpen(false);
+      return;
+    }
+
+    if (!suggestions.length) {
+      return;
+    }
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setActiveIndex((index) => (index + 1) % suggestions.length);
+      setIsOpen(true);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setActiveIndex((index) => (index - 1 + suggestions.length) % suggestions.length);
+      setIsOpen(true);
+    } else if (event.key === 'Enter' && isOpen) {
+      event.preventDefault();
+      handleSelect(suggestions[activeIndex] || suggestions[0]);
+    }
+  }
+
+  return (
+    <div className="cemetery-autocomplete" ref={containerRef}>
+      <div className="field-label-row">
+        <label htmlFor={inputIdRef.current}>Cemetery Name</label>
+      </div>
+      <div className="autocomplete-shell">
+        <input
+          id={inputIdRef.current}
+          ref={inputRef}
+          name="name"
+          value={value}
+          onChange={(event) => {
+            onChange(event.target.value);
+            setIsOpen(true);
+          }}
+          onFocus={() => setIsOpen(true)}
+          onKeyDown={handleKeyDown}
+          placeholder="Start typing a cemetery name"
+          autoComplete="off"
+          spellCheck="false"
+          aria-autocomplete="list"
+          aria-expanded={isOpen && suggestions.length > 0}
+        />
+        {selectedCemetery && <span className="autocomplete-selected-pill">Existing cemetery</span>}
+      </div>
+      <span className="field-hint">{helperText}</span>
+      {selectedCemetery && (
+        <div className="selected-record-banner">
+          <div>
+            <strong>{selectedCemetery.name}</strong>
+            <span>{getCemeterySummaryText(selectedCemetery)}</span>
+          </div>
+          <button className="ghost-btn" type="button" onClick={onClearSelection}>
+            Use new
+          </button>
+        </div>
+      )}
+      {isOpen && (
+        <div className="autocomplete-menu" role="listbox">
+          {suggestions.length > 0 ? (
+            suggestions.map((cemetery, index) => (
+              <button
+                key={cemetery.id}
+                type="button"
+                className={`autocomplete-option${index === activeIndex ? ' active' : ''}`}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  handleSelect(cemetery);
+                }}
+                onMouseEnter={() => setActiveIndex(index)}
+              >
+                <strong>{cemetery.name}</strong>
+                <span>{getCemeterySummaryText(cemetery)}</span>
+              </button>
+            ))
+          ) : (
+            <div className="autocomplete-empty">
+              {cemeteries.length === 0
+                ? 'No cemeteries saved yet. Keep typing to create a new one.'
+                : 'No matching cemeteries found. Keep typing to create a new one.'}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function handleDraftFieldChange(setter, event) {
+  const { name, value, type, checked } = event.target;
+  setter((prev) => ({
+    ...prev,
+    [name]: type === 'checkbox' ? checked : value
+  }));
+}
+
+function CustomerFormFields({ form, onChange }) {
+  return (
+    <div className="form-stack">
+      <FormField label="Full Name">
+        <input name="full_name" value={form.full_name} onChange={onChange} required />
+      </FormField>
+
+      <div className="field-row">
+        <FormField label="Email">
+          <input type="email" name="email" value={form.email} onChange={onChange} />
+        </FormField>
+        <FormField label="Phone">
+          <input name="phone" value={form.phone} onChange={onChange} />
+        </FormField>
+      </div>
+
+      <FormField
+        label="How They Heard About Us"
+        hint="Referral, cemetery office, search, repeat customer..."
+      >
+        <input
+          name="how_heard_about_us"
+          value={form.how_heard_about_us}
+          onChange={onChange}
+          placeholder="Referral, cemetery office, search, repeat customer..."
+        />
+      </FormField>
+
+      <FormField label="Address Line 1">
+        <input name="address_line1" value={form.address_line1} onChange={onChange} />
+      </FormField>
+
+      <FormField label="Address Line 2">
+        <input name="address_line2" value={form.address_line2} onChange={onChange} />
+      </FormField>
+
+      <div className="grid-3">
+        <FormField label="City">
+          <input name="city" value={form.city} onChange={onChange} />
+        </FormField>
+        <FormField label="State">
+          <input name="state" value={form.state} onChange={onChange} />
+        </FormField>
+        <FormField label="Postal Code">
+          <input name="postal_code" value={form.postal_code} onChange={onChange} />
+        </FormField>
+      </div>
+
+      <FormField label="Notes">
+        <textarea name="notes" value={form.notes} onChange={onChange} rows={4} />
+      </FormField>
+    </div>
+  );
+}
+
+function CemeteryFormFields({
+  form,
+  onChange,
+  cemeteries = [],
+  selectedCemetery = null,
+  onSelectCemetery,
+  onClearSelection,
+  onNameChange,
+  secondaryDisabled = false
+}) {
+  return (
+    <div className="form-stack">
+      <CemeteryAutocompleteField
+        cemeteries={cemeteries}
+        value={form.name}
+        selectedCemetery={selectedCemetery}
+        onChange={(nextValue) => {
+          if (onNameChange) {
+            onNameChange(nextValue, selectedCemetery);
+            return;
+          }
+          onChange({
+            target: { name: 'name', value: nextValue, type: 'text' }
+          });
+        }}
+        onSelectCemetery={onSelectCemetery}
+        onClearSelection={onClearSelection}
+      />
+
+      <FormField label="Address">
+        <input name="address" value={form.address} onChange={onChange} disabled={secondaryDisabled} />
+      </FormField>
+
+      <div className="grid-3">
+        <FormField label="City">
+          <input name="city" value={form.city} onChange={onChange} disabled={secondaryDisabled} />
+        </FormField>
+        <FormField label="State">
+          <input name="state" value={form.state} onChange={onChange} disabled={secondaryDisabled} />
+        </FormField>
+        <FormField label="Contact">
+          <input name="contact_name" value={form.contact_name} onChange={onChange} disabled={secondaryDisabled} />
+        </FormField>
+      </div>
+
+      <div className="field-row">
+        <FormField label="Contact Phone">
+          <input
+            name="contact_phone"
+            value={form.contact_phone}
+            onChange={onChange}
+            disabled={secondaryDisabled}
+          />
+        </FormField>
+        <FormField label="Contact Email">
+          <input
+            type="email"
+            name="contact_email"
+            value={form.contact_email}
+            onChange={onChange}
+            disabled={secondaryDisabled}
+          />
+        </FormField>
+      </div>
+
+      <FormField label="Notes">
+        <textarea name="notes" value={form.notes} onChange={onChange} rows={4} disabled={secondaryDisabled} />
+      </FormField>
+    </div>
+  );
+}
+
+function MemorialFormFields({ form, onChange, onPhotoNamesChange }) {
+  return (
+    <div className="form-stack">
+      <FormField label="Name On Stone">
+        <input
+          name="name_on_stone"
+          value={form.name_on_stone}
+          onChange={onChange}
+          placeholder="John H. Andrews Bench"
+        />
+      </FormField>
+
+      <div className="field-row">
+        <FormField label="Stone Type">
+          <select name="material" value={form.material} onChange={onChange}>
+            {MATERIAL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </FormField>
+        <FormField label="Style">
+          <input
+            name="stone_style"
+            value={form.stone_style}
+            onChange={onChange}
+            placeholder="Flat, slab, upright..."
+          />
+        </FormField>
+      </div>
+
+      <div className="field-row checkbox-row">
+        <label className="checkbox-card">
+          <span className="checkbox-card-copy">Has plaque</span>
+          <span className="checkbox-switch">
+            <input type="checkbox" name="has_plaque" checked={Boolean(form.has_plaque)} onChange={onChange} />
+            <span className="checkbox-switch-track" aria-hidden="true"></span>
+          </span>
+        </label>
+        <label className="checkbox-card">
+          <span className="checkbox-card-copy">Has paint</span>
+          <span className="checkbox-switch">
+            <input type="checkbox" name="has_paint" checked={Boolean(form.has_paint)} onChange={onChange} />
+            <span className="checkbox-switch-track" aria-hidden="true"></span>
+          </span>
+        </label>
+      </div>
+
+      <div className="field-row">
+        <FormField label="Stone Location">
+          <input
+            name="location_description"
+            value={form.location_description}
+            onChange={onChange}
+            placeholder="Section, row, landmarks..."
+          />
+        </FormField>
+        <FormField label="Approximate Age">
+          <input
+            type="number"
+            min="0"
+            name="age_years"
+            value={form.age_years}
+            onChange={onChange}
+            placeholder="Years"
+          />
+        </FormField>
+      </div>
+
+      <FormField label="Vases / Flowers / Decorations">
+        <textarea name="decoration_notes" value={form.decoration_notes} onChange={onChange} rows={3} />
+      </FormField>
+
+      <FormField label="Previous Cleans / Restoration Notes">
+        <textarea
+          name="previous_cleaning_notes"
+          value={form.previous_cleaning_notes}
+          onChange={onChange}
+          rows={3}
+        />
+      </FormField>
+
+      <FormField label="Additional Notes">
+        <textarea name="notes" value={form.notes} onChange={onChange} rows={4} />
+      </FormField>
+
+      <FormField label="Reference Photos">
+        <input
+          type="file"
+          multiple
+          onChange={(event) => {
+            const names = Array.from(event.target.files || []).map((file) => file.name);
+            onPhotoNamesChange(names);
+          }}
+        />
+      </FormField>
+      {form.photo_names.length > 0 && (
+        <div className="detail-pill-row">
+          {form.photo_names.map((name) => (
+            <span key={name} className="detail-pill">{name}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DashboardPageModern() {
+  const { loading, error, summary, upcoming, recent } = useDashboardData(true);
+  const servicesState = useApi('/scheduling/services/', [], true, { refreshEvent: 'hs:schedule-updated' });
+  const workflowStore = useWorkflowStore();
+  const revenueRows = useMemo(
+    () => buildRevenueChartRows(recent, servicesState.data || []),
+    [recent, servicesState.data]
+  );
+
+  const stats = [
+    {
+      label: 'Total Revenue',
+      value: summary ? formatCurrency(summary.total_revenue || 0) : '-',
+      sub: summary ? 'Completed work already collected' : 'Awaiting data'
+    },
+    {
+      label: 'Projected Revenue',
+      value: summary ? formatCurrency(summary.projected_revenue || 0) : '-',
+      sub: summary ? 'Scheduled work still in the pipeline' : 'Awaiting data'
+    },
+    {
+      label: 'Active Services',
+      value: summary?.active_services ?? '-',
+      sub: summary ? `${summary.services_today} on the calendar today` : 'Awaiting data'
+    },
+    {
+      label: 'Onboarding Queue',
+      value: workflowStore.localMemorials.length,
+      sub: workflowStore.localMemorials.length ? 'Memorial intake records saved in the UI' : 'No local memorial intake drafts'
+    }
+  ];
+
+  return (
+    <>
+      <div className="page-heading page-heading-actions">
+        <div>
+          <h1 className="page-title">Dashboard</h1>
+          <p className="page-subtitle">Overview of restoration activity, revenue, onboarding, and service timing.</p>
+        </div>
+        <button className="primary-btn" type="button" onClick={() => openOnboardingWorkflow()}>
+          Onboard Customer
+        </button>
+      </div>
+
+      {(error || servicesState.error) && (
+        <div className="card warn">Backend error: {error || servicesState.error}</div>
+      )}
+
+      <section className="kpis">
+        {stats.map((stat) => (
+          <div key={stat.label} className="kpi">
+            <span className="kpi-label">{stat.label}</span>
+            <strong>{stat.value}</strong>
+            <small className={stat.label.includes('Revenue') ? 'positive' : ''}>{stat.sub}</small>
+          </div>
+        ))}
+      </section>
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <h3>Upcoming Services</h3>
+            <button className="ghost-btn" type="button" onClick={() => { window.location.hash = getSchedulingPathForCurrentRole(); }}>
+              View Calendar
+            </button>
+          </div>
+          {loading && <p className="meta">Loading from backend...</p>}
+          {!loading && upcoming.length === 0 && <p className="meta">No upcoming services scheduled.</p>}
+          {!loading && upcoming.length > 0 && (
+            <ul className="service-list">
+              {upcoming.map((svc) => (
+                <li key={svc.id}>
+                  <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
+                  <span>{svc.cemetery_name || 'Scheduled location'}</span>
+                  <div className="meta">Service date: {formatDateTimeShort(svc.scheduled_start)}</div>
+                  <div className="meta">{svc.status_display || svc.status || 'Scheduled'}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h3>Monthly Revenue</h3>
+            <span className="meta">Collected vs scheduled snapshot</span>
+          </div>
+          <RevenueSnapshotChart rows={revenueRows} />
+        </div>
+      </section>
+
+      <section className="grid-2">
+        <div className="card">
+          <h3>Recently Completed</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Memorial</th>
+                <th>Cemetery</th>
+                <th>Date</th>
+                <th>Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && <tr><td colSpan="4" className="meta">Loading...</td></tr>}
+              {!loading && recent.length === 0 && <tr><td colSpan="4" className="meta">No completed services yet.</td></tr>}
+              {!loading && recent.map((svc) => (
+                <tr key={svc.id}>
+                  <td>{svc.memorial_name}</td>
+                  <td>{svc.cemetery_name || '-'}</td>
+                  <td>{formatDateOnly(svc.completed_date)}</td>
+                  <td>{svc.amount != null ? formatCurrency(Number(svc.amount)) : '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h3>Customer Journey</h3>
+            <button className="ghost-btn" type="button" onClick={() => openOnboardingWorkflow()}>
+              Open Intake
+            </button>
+          </div>
+          <p className="meta">Use onboarding to create a customer, attach a stone, and keep repeat memorial work nested under the same account.</p>
+          <div className="compact-stack">
+            <div className="queue-row">
+              <strong>{workflowStore.localMemorials.length}</strong>
+              <span>Memorial records added from the frontend workflow and ready for review.</span>
+            </div>
+            <div className="queue-row">
+              <strong>{summary?.services_today ?? 0}</strong>
+              <span>Service visits are already planned for today.</span>
+            </div>
+            <div className="queue-row">
+              <strong>{upcoming.length}</strong>
+              <span>Upcoming visits now show the service date directly on the dashboard.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function FrontDeskDashboardPageModern() {
+  const { loading, error, summary, upcoming, recent } = useDashboardData(true);
+  const customerState = useApi('/manage/customers/', [], true, { refreshEvent: 'hs:customers-updated' });
+  const memorialState = useApi('/memorials/', []);
+  const cemeteryState = useApi('/cemeteries/', []);
+  const servicesState = useApi('/scheduling/services/', [], true, { refreshEvent: 'hs:schedule-updated' });
+  const workflowStore = useWorkflowStore();
+  const memorials = useMemo(
+    () => buildMergedMemorials(memorialState.data || [], workflowStore),
+    [memorialState.data, workflowStore]
+  );
+  const customers = useMemo(
+    () => buildMergedCustomers(customerState.data || [], memorials, workflowStore),
+    [customerState.data, memorials, workflowStore]
+  );
+  const cemeteries = useMemo(
+    () => buildMergedCemeteries(cemeteryState.data || [], memorials, workflowStore),
+    [cemeteryState.data, memorials, workflowStore]
+  );
+  const revenueRows = useMemo(
+    () => buildRevenueChartRows(recent, servicesState.data || []),
+    [recent, servicesState.data]
+  );
+  const unscheduledServices = (servicesState.data || []).filter((service) => !service.scheduled_start || service.status === 'draft');
+
+  return (
+    <>
+      <div className="page-heading page-heading-actions">
+        <div>
+          <h1 className="page-title">Front Desk Dashboard</h1>
+          <p className="page-subtitle">Daily control center for onboarding, scheduling, customer follow-up, and cemetery visibility.</p>
+        </div>
+        <button className="primary-btn" type="button" onClick={() => openOnboardingWorkflow()}>
+          Onboard Customer
+        </button>
+      </div>
+
+      {(error || customerState.error || memorialState.error || cemeteryState.error || servicesState.error) && (
+        <div className="card warn">
+          Backend error: {error || customerState.error || memorialState.error || cemeteryState.error || servicesState.error}
+        </div>
+      )}
+
+      <section className="kpis">
+        <div className="kpi">
+          <span className="kpi-label">Customers</span>
+          <strong>{customers.length || '-'}</strong>
+          <small>Active records available to the front desk</small>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">Memorials</span>
+          <strong>{memorials.length || '-'}</strong>
+          <small>Stone records including local intake additions</small>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">Unscheduled Jobs</span>
+          <strong>{unscheduledServices.length || '-'}</strong>
+          <small>Still need front desk action</small>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">Cemeteries</span>
+          <strong>{cemeteries.length || '-'}</strong>
+          <small>Known locations with memorial records</small>
+        </div>
+      </section>
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <h3>Quick Actions</h3>
+            <span className="meta">Most-used workflow shortcuts</span>
+          </div>
+          <div className="quick-links">
+            <button className="quick-link-card quick-link-btn" type="button" onClick={() => openOnboardingWorkflow()}>
+              <strong>Onboard Customer</strong>
+              <span>Create a customer and attach a new stone record.</span>
+            </button>
+            <a className="quick-link-card" href="#/frontdesk/customers">
+              <strong>Customer Records</strong>
+              <span>Update contact info and add stones under an existing customer.</span>
+            </a>
+            <a className="quick-link-card" href="#/frontdesk/scheduling">
+              <strong>Scheduling</strong>
+              <span>Open the calendar and assign the service queue.</span>
+            </a>
+            <a className="quick-link-card" href="#/frontdesk/cemeteries">
+              <strong>Cemeteries</strong>
+              <span>Review cemetery info and all stones serviced there.</span>
+            </a>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h3>Monthly Revenue</h3>
+            <span className="meta">Collected vs scheduled snapshot</span>
+          </div>
+          <RevenueSnapshotChart rows={revenueRows} />
+        </div>
+      </section>
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <h3>Upcoming Services</h3>
+            <a className="ghost-btn" href="#/frontdesk/scheduling">View All</a>
+          </div>
+          {loading && <p className="meta">Loading upcoming services...</p>}
+          {!loading && upcoming.length === 0 && <p className="meta">No upcoming services scheduled.</p>}
+          {!loading && upcoming.length > 0 && (
+            <ul className="service-list">
+              {upcoming.map((service) => (
+                <li key={service.id}>
+                  <strong>{service.memorial_name || `Service #${service.id}`}</strong>
+                  <span>{service.cemetery_name || 'No cemetery'}</span>
+                  <div className="meta">Service date: {formatDateTimeShort(service.scheduled_start)}</div>
+                  <div className="meta">{service.status_display || service.status}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h3>Service Snapshot</h3>
+            <span className="meta">Front desk priorities right now</span>
+          </div>
+          <div className="compact-stack">
+            <div className="queue-row">
+              <strong>{workflowStore.localMemorials.length}</strong>
+              <span>New memorial intake records were added through the frontend workflow.</span>
+            </div>
+            <div className="queue-row">
+              <strong>{summary?.services_today ?? 0}</strong>
+              <span>Services are on the schedule for today.</span>
+            </div>
+            <div className="queue-row">
+              <strong>{unscheduledServices.length}</strong>
+              <span>Jobs still need scheduling or technician assignment.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function MemorialsPageModern() {
+  const memorialState = useApi('/memorials/', []);
+  const workflowStore = useWorkflowStore();
+  const memorials = useMemo(
+    () => buildMergedMemorials(memorialState.data || [], workflowStore),
+    [memorialState.data, workflowStore]
+  );
+  const [selectedId, setSelectedId] = useState('');
+  const [editor, setEditor] = useState(createMemorialFormState());
+  const [saveState, setSaveState] = useState({ error: '', success: '' });
+
+  useEffect(() => {
+    if (!memorials.length) {
+      setSelectedId('');
+      return;
+    }
+    const exists = memorials.some((row) => String(row.id) === String(selectedId));
+    if (!exists) setSelectedId(String(memorials[0].id));
+  }, [memorials, selectedId]);
+
+  const selectedMemorial = useMemo(
+    () => memorials.find((row) => String(row.id) === String(selectedId)) || null,
+    [memorials, selectedId]
+  );
+
+  useEffect(() => {
+    if (!selectedMemorial) return;
+    setEditor(createMemorialFormState(selectedMemorial));
+    setSaveState({ error: '', success: '' });
+  }, [selectedMemorial]);
+
+  function handleSave(event) {
+    event.preventDefault();
+    if (!selectedMemorial) return;
+    if (selectedMemorial.source === 'local') {
+      upsertLocalMemorial({ ...selectedMemorial, ...editor });
+    } else {
+      saveMemorialMeta(selectedMemorial.id, {
+        name_on_stone: editor.name_on_stone,
+        material: editor.material,
+        stone_style: editor.stone_style,
+        has_plaque: editor.has_plaque,
+        has_paint: editor.has_paint,
+        decoration_notes: editor.decoration_notes,
+        location_description: editor.location_description,
+        age_years: editor.age_years,
+        previous_cleaning_notes: editor.previous_cleaning_notes,
+        notes: editor.notes,
+        photo_names: editor.photo_names,
+        regional_team: editor.regional_team
+      });
+    }
+    setSaveState({ error: '', success: 'Memorial details saved.' });
+  }
+
+  return (
+    <>
+      <div className="page-heading page-heading-actions">
+        <div>
+          <h1 className="page-title">Memorials</h1>
+          <p className="page-subtitle">Stone-focused records with clearer field grouping and a dedicated service snapshot.</p>
+        </div>
+        <button className="primary-btn" type="button" onClick={() => openOnboardingWorkflow()}>
+          Add Memorial
+        </button>
+      </div>
+
+      {memorialState.error && <div className="card warn">Backend error: {memorialState.error}</div>}
+
+      <section className="grid-2 memorials-workspace">
+        <div className="card">
+          <div className="card-header">
+            <h3>Memorial Library</h3>
+            <span className="meta">{memorials.length} records</span>
+          </div>
+          {memorialState.loading && <p className="meta">Loading memorials...</p>}
+          {!memorialState.loading && memorials.length === 0 && <p className="meta">No memorials yet.</p>}
+          {!memorialState.loading && memorials.length > 0 && (
+            <div className="record-stack">
+              {memorials.map((memorial) => (
+                <button
+                  key={memorial.id}
+                  type="button"
+                  className={`record-card${String(selectedId) === String(memorial.id) ? ' active' : ''}`}
+                  onClick={() => setSelectedId(String(memorial.id))}
+                >
+                  <div className="record-card-header">
+                    <span className="stone-chip">Stone Record</span>
+                    <span className="meta">{memorial.material_label}</span>
+                  </div>
+                  <strong>{memorial.name_on_stone || memorial.customer || 'Memorial record'}</strong>
+                  <span>{memorial.cemetery || 'No cemetery listed'}</span>
+                  <div className="record-card-meta">
+                    <span>Customer: {memorial.customer || 'Unknown'}</span>
+                    <span>Last service: {memorial.last_service_date ? formatDateOnly(memorial.last_service_date) : 'Not logged'}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="card">
+          {!selectedMemorial && <p className="meta">Select a memorial to review the stone details.</p>}
+          {selectedMemorial && (
+            <>
+              <div className="memorial-hero">
+                <div>
+                  <div className="detail-kicker">Memorial detail</div>
+                  <h3>{editor.name_on_stone || selectedMemorial.customer || 'Memorial record'}</h3>
+                  <p className="meta">{getMaterialLabel(editor.material)}{editor.stone_style ? ` | ${editor.stone_style}` : ''}</p>
+                </div>
+                <div className="detail-pill-row">
+                  <span className="detail-pill">{selectedMemorial.cemetery || 'No cemetery'}</span>
+                  <span className="detail-pill">{selectedMemorial.customer || 'No customer'}</span>
+                </div>
+              </div>
+
+              <div className="detail-grid">
+                <div className="detail-card">
+                  <span className="detail-label">Service Snapshot</span>
+                  <strong>{selectedMemorial.last_service_date ? formatDateOnly(selectedMemorial.last_service_date) : 'Not scheduled yet'}</strong>
+                  <p>Regional team: {editor.regional_team || selectedMemorial.regional_team || 'Scheduling team'}</p>
+                </div>
+                <div className="detail-card">
+                  <span className="detail-label">Stone Location</span>
+                  <strong>{editor.location_description || 'Capture location details here'}</strong>
+                  <p>{editor.photo_names.length ? `${editor.photo_names.length} reference photo names saved` : 'No reference photo names saved yet'}</p>
+                </div>
+              </div>
+
+              <form className="form" onSubmit={handleSave}>
+                <MemorialFormFields
+                  form={editor}
+                  onChange={(event) => handleDraftFieldChange(setEditor, event)}
+                  onPhotoNamesChange={(photoNames) => setEditor((prev) => ({ ...prev, photo_names: photoNames }))}
+                />
+                {saveState.error && <div className="form-error">{saveState.error}</div>}
+                {saveState.success && <div className="card form-success"><strong>{saveState.success}</strong></div>}
+                <button className="primary-btn" type="submit">Save Memorial Details</button>
+              </form>
+            </>
+          )}
+        </div>
+      </section>
+    </>
+  );
+}
+
+function CustomersPageModern() {
+  const customerState = useApi('/manage/customers/', [], true, { refreshEvent: 'hs:customers-updated' });
+  const memorialState = useApi('/memorials/', []);
+  const workflowStore = useWorkflowStore();
+  const memorials = useMemo(
+    () => buildMergedMemorials(memorialState.data || [], workflowStore),
+    [memorialState.data, workflowStore]
+  );
+  const customers = useMemo(
+    () => buildMergedCustomers(customerState.data || [], memorials, workflowStore),
+    [customerState.data, memorials, workflowStore]
+  );
+  const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState(createCustomerFormState());
+  const [saveState, setSaveState] = useState({ loading: false, error: '', success: '' });
+
+  useEffect(() => {
+    if (!customers.length) {
+      setSelectedCustomerId('');
+      return;
+    }
+    const exists = customers.some((row) => String(row.id) === String(selectedCustomerId));
+    if (!exists) {
+      setSelectedCustomerId(String(customers[0].id));
+      setEditingId(customers[0].id);
+      setForm(createCustomerFormState(customers[0]));
+    }
+  }, [customers, selectedCustomerId]);
+
+  function startCreate() {
+    setEditingId(null);
+    setSelectedCustomerId('');
+    setForm(createCustomerFormState());
+    setSaveState({ loading: false, error: '', success: '' });
+  }
+
+  function startEdit(customer) {
+    setEditingId(customer.id);
+    setSelectedCustomerId(String(customer.id));
+    setForm(createCustomerFormState(customer));
+    setSaveState({ loading: false, error: '', success: '' });
+  }
+
+  const selectedCustomer = useMemo(
+    () => customers.find((customer) => String(customer.id) === String(selectedCustomerId)) || null,
+    [customers, selectedCustomerId]
+  );
+
+  const selectedCustomerMemorials = useMemo(
+    () => memorials.filter((memorial) => selectedCustomer && matchesCustomerRecord(memorial, selectedCustomer)),
+    [memorials, selectedCustomer]
+  );
+
+  async function handleSave(event) {
+    event.preventDefault();
+    setSaveState({ loading: true, error: '', success: '' });
+    try {
+      const payload = {
+        full_name: form.full_name,
+        email: form.email,
+        phone: form.phone,
+        address_line1: form.address_line1,
+        address_line2: form.address_line2,
+        city: form.city,
+        state: form.state,
+        postal_code: form.postal_code,
+        notes: form.notes
+      };
+      const isEdit = Boolean(editingId);
+      const res = await apiFetch(isEdit ? `/manage/customers/${editingId}/` : '/manage/customers/', {
+        method: isEdit ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(formatApiError(json, `Save failed (${res.status})`));
+      saveCustomerMeta(json.customer.id, {
+        how_heard_about_us: form.how_heard_about_us,
+        address_line1: form.address_line1,
+        address_line2: form.address_line2,
+        city: form.city,
+        state: form.state,
+        postal_code: form.postal_code,
+        notes: form.notes
+      });
+      setEditingId(json.customer.id);
+      setSelectedCustomerId(String(json.customer.id));
+      setForm(createCustomerFormState({ ...form, ...json.customer }));
+      setSaveState({ loading: false, error: '', success: isEdit ? 'Customer updated.' : 'Customer created.' });
+      window.dispatchEvent(new Event('hs:customers-updated'));
+    } catch (err) {
+      setSaveState({ loading: false, error: err.message || 'Failed to save customer.', success: '' });
+    }
+  }
+
+  async function handleDelete(customerId) {
+    if (!window.confirm('Delete this customer?')) return;
+    setSaveState({ loading: true, error: '', success: '' });
+    try {
+      const res = await apiFetch(`/manage/customers/${customerId}/`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`Delete failed (${res.status})`);
+      setSaveState({ loading: false, error: '', success: 'Customer deleted.' });
+      startCreate();
+      window.dispatchEvent(new Event('hs:customers-updated'));
+    } catch (err) {
+      setSaveState({ loading: false, error: err.message || 'Failed to delete customer.', success: '' });
+    }
+  }
+
+  return (
+    <>
+      <div className="page-heading page-heading-actions">
+        <div>
+          <h1 className="page-title">Customers</h1>
+          <p className="page-subtitle">Manage contact records and add more stones under an existing customer profile.</p>
+        </div>
+        <button className="primary-btn" type="button" onClick={() => openOnboardingWorkflow()}>
+          Onboard Customer
+        </button>
+      </div>
+
+      {(customerState.error || memorialState.error) && (
+        <div className="card warn">Backend error: {customerState.error || memorialState.error}</div>
+      )}
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <h3>{editingId ? `Customer #${editingId}` : 'New Customer'}</h3>
+            <button className="ghost-btn" type="button" onClick={startCreate}>Clear</button>
+          </div>
+          <form className="form" onSubmit={handleSave}>
+            <CustomerFormFields form={form} onChange={(event) => handleDraftFieldChange(setForm, event)} />
+            {saveState.error && <div className="form-error">{saveState.error}</div>}
+            {saveState.success && <div className="card form-success"><strong>{saveState.success}</strong></div>}
+            <button className="primary-btn" type="submit" disabled={saveState.loading}>
+              {saveState.loading ? 'Saving...' : (editingId ? 'Save Customer' : 'Create Customer')}
+            </button>
+          </form>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h3>Customer List</h3>
+            <span className="meta">{customers.length} records</span>
+          </div>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Customer</th>
+                  <th>Memorials</th>
+                  <th>Email</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {customerState.loading && <tr><td colSpan="4" className="meta">Loading customers...</td></tr>}
+                {!customerState.loading && customers.length === 0 && <tr><td colSpan="4" className="meta">No customers yet.</td></tr>}
+                {!customerState.loading && customers.map((customer) => (
+                  <tr key={customer.id}>
+                    <td>
+                      <strong>{customer.full_name}</strong>
+                      <div className="meta">{customer.how_heard_about_us || 'Referral source not captured yet'}</div>
+                    </td>
+                    <td>{customer.memorials_count || 0}</td>
+                    <td>{customer.email || '-'}</td>
+                    <td>
+                      <div className="table-action-cell">
+                        <button className="ghost-btn" type="button" onClick={() => startEdit(customer)}>Edit</button>
+                        <button
+                          className="ghost-btn"
+                          type="button"
+                          onClick={() => openOnboardingWorkflow({
+                            existing_customer_id: customer.id,
+                            customer_name: customer.full_name
+                          })}
+                        >
+                          Add Stone
+                        </button>
+                        <button className="ghost-btn" type="button" onClick={() => handleDelete(customer.id)}>Delete</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <h3>Selected Customer</h3>
+            {selectedCustomer && (
+              <button
+                className="ghost-btn"
+                type="button"
+                onClick={() => openOnboardingWorkflow({
+                  existing_customer_id: selectedCustomer.id,
+                  customer_name: selectedCustomer.full_name
+                })}
+              >
+                Add Memorial
+              </button>
+            )}
+          </div>
+          {!selectedCustomer && <p className="meta">Select a customer to review their profile.</p>}
+          {selectedCustomer && (
+            <div className="detail-grid">
+              <div className="detail-card">
+                <span className="detail-label">Contact</span>
+                <strong>{selectedCustomer.full_name}</strong>
+                <p>{selectedCustomer.email || 'No email saved'}</p>
+                <p>{selectedCustomer.phone || 'No phone saved'}</p>
+              </div>
+              <div className="detail-card">
+                <span className="detail-label">Referral Source</span>
+                <strong>{selectedCustomer.how_heard_about_us || 'Not captured'}</strong>
+                <p>{selectedCustomer.last_contact ? `Last contact ${formatDateOnly(selectedCustomer.last_contact)}` : 'No last contact logged'}</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="card">
+          <h3>Memorials Under This Customer</h3>
+          {!selectedCustomer && <p className="meta">Select a customer first.</p>}
+          {selectedCustomer && selectedCustomerMemorials.length === 0 && (
+            <p className="meta">No memorials are attached to this customer yet.</p>
+          )}
+          {selectedCustomer && selectedCustomerMemorials.length > 0 && (
+            <div className="record-stack compact-record-stack">
+              {selectedCustomerMemorials.map((memorial) => (
+                <div key={memorial.id} className="record-card record-card-static">
+                  <div className="record-card-header">
+                    <span className="stone-chip">Stone</span>
+                    <span className="meta">{memorial.material_label}</span>
+                  </div>
+                  <strong>{memorial.name_on_stone || memorial.customer || 'Memorial record'}</strong>
+                  <span>{memorial.cemetery || 'No cemetery listed'}</span>
+                  <div className="record-card-meta">
+                    <span>{memorial.location_description || 'Location details not captured yet'}</span>
+                    <span>{memorial.last_service_date ? `Last service ${formatDateOnly(memorial.last_service_date)}` : 'No service logged'}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+    </>
+  );
+}
+
+function CemeteriesPageModern() {
+  const cemeteryState = useApi('/cemeteries/', []);
+  const memorialState = useApi('/memorials/', []);
+  const workflowStore = useWorkflowStore();
+  const memorials = useMemo(
+    () => buildMergedMemorials(memorialState.data || [], workflowStore),
+    [memorialState.data, workflowStore]
+  );
+  const cemeteries = useMemo(
+    () => buildMergedCemeteries(cemeteryState.data || [], memorials, workflowStore),
+    [cemeteryState.data, memorials, workflowStore]
+  );
+  const [selectedCemeteryId, setSelectedCemeteryId] = useState('');
+  const [form, setForm] = useState(createCemeteryFormState());
+  const [saveState, setSaveState] = useState({ success: '' });
+
+  const selectedCemetery = useMemo(
+    () => cemeteries.find((cemetery) => String(cemetery.id) === String(selectedCemeteryId)) || null,
+    [cemeteries, selectedCemeteryId]
+  );
+
+  useEffect(() => {
+    if (!selectedCemetery) return;
+    setForm(createCemeteryFormState(selectedCemetery));
+    setSaveState({ success: '' });
+  }, [selectedCemetery]);
+
+  function handleSelectCemetery(cemetery) {
+    if (!cemetery) return;
+    setSelectedCemeteryId(String(cemetery.id));
+    setForm(createCemeteryFormState(cemetery));
+    setSaveState({ success: '' });
+  }
+
+  function handleClearSelection() {
+    setSelectedCemeteryId('');
+    setForm(createCemeteryFormState());
+    setSaveState({ success: '' });
+  }
+
+  const cemeteryMemorials = useMemo(
+    () => memorials.filter((memorial) => selectedCemetery && matchesCemeteryRecord(memorial, selectedCemetery)),
+    [memorials, selectedCemetery]
+  );
+
+  function handleSave(event) {
+    event.preventDefault();
+    const nextRecord = { ...form };
+    if (!nextRecord.id) {
+      nextRecord.id = makeLocalId('cemetery');
+      upsertLocalCemetery(nextRecord);
+      setSelectedCemeteryId(String(nextRecord.id));
+    } else if (String(nextRecord.id).startsWith('local-')) {
+      upsertLocalCemetery(nextRecord);
+    } else {
+      saveCemeteryMeta(nextRecord.id, nextRecord);
+    }
+    setSaveState({ success: 'Cemetery details saved.' });
+  }
+
+  return (
+    <>
+      <div className="page-heading page-heading-actions">
+        <div>
+          <h1 className="page-title">Cemeteries</h1>
+          <p className="page-subtitle">Capture the cemetery info first, then review every stone serviced inside that location.</p>
+        </div>
+        <button className="primary-btn" type="button" onClick={() => openOnboardingWorkflow()}>
+          Add Stone Intake
+        </button>
+      </div>
+
+      {(cemeteryState.error || memorialState.error) && (
+        <div className="card warn">Backend error: {cemeteryState.error || memorialState.error}</div>
+      )}
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <h3>{form.id ? 'Cemetery Details' : 'New Cemetery'}</h3>
+            <button
+              className="ghost-btn"
+              type="button"
+              onClick={handleClearSelection}
+            >
+              New
+            </button>
+          </div>
+          <form className="form" onSubmit={handleSave}>
+            <CemeteryFormFields
+              form={form}
+              cemeteries={cemeteries}
+              selectedCemetery={selectedCemetery}
+              onSelectCemetery={handleSelectCemetery}
+              onClearSelection={handleClearSelection}
+              onNameChange={(nextValue) => setForm((prev) => ({ ...prev, name: nextValue }))}
+              onChange={(event) => handleDraftFieldChange(setForm, event)}
+            />
+            {saveState.success && <div className="card form-success"><strong>{saveState.success}</strong></div>}
+            <button className="primary-btn" type="submit">Save Cemetery</button>
+          </form>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h3>Cemetery List</h3>
+            <span className="meta">{cemeteries.length} locations</span>
+          </div>
+          <div className="record-stack">
+            {cemeteries.map((cemetery) => (
+              <button
+                key={cemetery.id}
+                type="button"
+                className={`record-card${String(selectedCemeteryId) === String(cemetery.id) ? ' active' : ''}`}
+                onClick={() => handleSelectCemetery(cemetery)}
+              >
+                <strong>{cemetery.name}</strong>
+                <span>{[cemetery.city, cemetery.state].filter(Boolean).join(', ') || 'City and state not captured yet'}</span>
+                <div className="record-card-meta">
+                  <span>{cemetery.address || 'No address saved'}</span>
+                  <span>{cemetery.memorials_count || 0} stones</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <div className="card">
+        <div className="card-header">
+          <h3>Stones In This Cemetery</h3>
+          <span className="meta">Customer info intentionally hidden here</span>
+        </div>
+        {!selectedCemetery && <p className="meta">Select a cemetery first.</p>}
+        {selectedCemetery && cemeteryMemorials.length === 0 && (
+          <p className="meta">No stones are attached to this cemetery yet.</p>
+        )}
+        {selectedCemetery && cemeteryMemorials.length > 0 && (
+          <div className="record-stack compact-record-stack">
+            {cemeteryMemorials.map((memorial) => (
+              <div key={memorial.id} className="record-card record-card-static">
+                <div className="record-card-header">
+                  <span className="stone-chip">Stone</span>
+                  <span className="meta">{memorial.material_label}</span>
+                </div>
+                <strong>{memorial.name_on_stone || 'Memorial record'}</strong>
+                <span>{memorial.location_description || 'Location details not captured yet'}</span>
+                <div className="record-card-meta">
+                  <span>{memorial.stone_style || 'Style not captured'}</span>
+                  <span>{memorial.last_service_date ? `Last service ${formatDateOnly(memorial.last_service_date)}` : 'No service logged'}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function OnboardingPageModern() {
+  const customerState = useApi('/manage/customers/', [], true, { refreshEvent: 'hs:customers-updated' });
+  const cemeteryState = useApi('/cemeteries/', []);
+  const workflowStore = useWorkflowStore();
+  const draft = useMemo(() => readOnboardingDraft(), []);
+  const cemeteries = useMemo(
+    () => buildMergedCemeteries(cemeteryState.data || [], [], workflowStore),
+    [cemeteryState.data, workflowStore]
+  );
+  const customers = Array.isArray(customerState.data) ? customerState.data : [];
+  const [customerMode, setCustomerMode] = useState(draft.existing_customer_id ? 'existing' : 'new');
+  const [selectedCustomerId, setSelectedCustomerId] = useState(String(draft.existing_customer_id || ''));
+  const [customerForm, setCustomerForm] = useState(createCustomerFormState({
+    full_name: draft.customer_name || ''
+  }));
+  const [selectedCemeteryId, setSelectedCemeteryId] = useState(String(draft.existing_cemetery_id || ''));
+  const [cemeteryForm, setCemeteryForm] = useState(createCemeteryFormState());
+  const [memorialForm, setMemorialForm] = useState(createMemorialFormState());
+  const [submitState, setSubmitState] = useState({ loading: false, error: '', success: '' });
+  const selectedCemetery = useMemo(
+    () => cemeteries.find((cemetery) => String(cemetery.id) === String(selectedCemeteryId)) || null,
+    [cemeteries, selectedCemeteryId]
+  );
+
+  useEffect(() => {
+    if (!selectedCemetery) return;
+    setCemeteryForm(createCemeteryFormState(selectedCemetery));
+  }, [selectedCemetery]);
+
+  function handleClearDraft() {
+    clearOnboardingDraft();
+    setCustomerMode('new');
+    setSelectedCustomerId('');
+    setCustomerForm(createCustomerFormState());
+    setSelectedCemeteryId('');
+    setCemeteryForm(createCemeteryFormState());
+    setMemorialForm(createMemorialFormState());
+    setSubmitState({ loading: false, error: '', success: '' });
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setSubmitState({ loading: true, error: '', success: '' });
+    try {
+      let customerRecord = null;
+
+      if (customerMode === 'existing') {
+        customerRecord = customers.find((customer) => String(customer.id) === String(selectedCustomerId)) || null;
+        if (!customerRecord) throw new Error('Select an existing customer.');
+      } else {
+        const payload = {
+          full_name: customerForm.full_name,
+          email: customerForm.email,
+          phone: customerForm.phone,
+          address_line1: customerForm.address_line1,
+          address_line2: customerForm.address_line2,
+          city: customerForm.city,
+          state: customerForm.state,
+          postal_code: customerForm.postal_code,
+          notes: customerForm.notes
+        };
+        const res = await apiFetch('/manage/customers/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(formatApiError(json, `Create failed (${res.status})`));
+        customerRecord = json.customer;
+        window.dispatchEvent(new Event('hs:customers-updated'));
+      }
+
+      saveCustomerMeta(customerRecord.id, {
+        how_heard_about_us: customerForm.how_heard_about_us,
+        address_line1: customerForm.address_line1,
+        address_line2: customerForm.address_line2,
+        city: customerForm.city,
+        state: customerForm.state,
+        postal_code: customerForm.postal_code,
+        notes: customerForm.notes
+      });
+
+      let cemeteryRecord = null;
+      if (selectedCemeteryId) {
+        cemeteryRecord = cemeteries.find((cemetery) => String(cemetery.id) === String(selectedCemeteryId)) || null;
+        if (!cemeteryRecord) throw new Error('Select an existing cemetery.');
+      } else {
+        cemeteryRecord = {
+          ...cemeteryForm,
+          id: makeLocalId('cemetery')
+        };
+        upsertLocalCemetery(cemeteryRecord);
+      }
+
+      const memorialRecord = {
+        ...memorialForm,
+        id: makeLocalId('memorial'),
+        customer_id: customerRecord.id,
+        customer: customerRecord.full_name,
+        cemetery_id: cemeteryRecord.id,
+        cemetery: cemeteryRecord.name,
+        name_on_stone: memorialForm.name_on_stone || customerRecord.full_name
+      };
+      upsertLocalMemorial(memorialRecord);
+      clearOnboardingDraft();
+      setSubmitState({ loading: false, error: '', success: 'Customer and memorial intake saved.' });
+      setCustomerMode('new');
+      setSelectedCustomerId('');
+      setCustomerForm(createCustomerFormState());
+      setSelectedCemeteryId('');
+      setCemeteryForm(createCemeteryFormState());
+      setMemorialForm(createMemorialFormState());
+    } catch (err) {
+      setSubmitState({ loading: false, error: err.message || 'Failed to save onboarding.', success: '' });
+    }
+  }
+
+  return (
+    <>
+      <div className="page-heading page-heading-actions">
+        <div>
+          <h1 className="page-title">Onboarding</h1>
+          <p className="page-subtitle">Create a customer, capture how they found you, and attach a stone under the right cemetery.</p>
+        </div>
+        <button className="ghost-btn" type="button" onClick={handleClearDraft}>Clear Draft</button>
+      </div>
+
+      {(customerState.error || cemeteryState.error) && (
+        <div className="card warn">Backend error: {customerState.error || cemeteryState.error}</div>
+      )}
+
+      <form className="form" onSubmit={handleSubmit}>
+        <section className="grid-2">
+          <div className="card">
+            <div className="card-header">
+              <h3>Customer</h3>
+              <div className="toggle-group">
+                <button
+                  type="button"
+                  className={`toggle-btn${customerMode === 'new' ? ' active' : ''}`}
+                  onClick={() => setCustomerMode('new')}
+                >
+                  New
+                </button>
+                <button
+                  type="button"
+                  className={`toggle-btn${customerMode === 'existing' ? ' active' : ''}`}
+                  onClick={() => setCustomerMode('existing')}
+                >
+                  Existing
+                </button>
+              </div>
+            </div>
+            {customerMode === 'existing' && (
+              <>
+                <label>Existing Customer</label>
+                <select value={selectedCustomerId} onChange={(event) => setSelectedCustomerId(event.target.value)} required>
+                  <option value="">Select customer</option>
+                  {customers.map((customer) => (
+                    <option key={customer.id} value={customer.id}>{customer.full_name}</option>
+                  ))}
+                </select>
+                <label>How They Heard About Us</label>
+                <input
+                  name="how_heard_about_us"
+                  value={customerForm.how_heard_about_us}
+                  onChange={(event) => handleDraftFieldChange(setCustomerForm, event)}
+                />
+              </>
+            )}
+            {customerMode === 'new' && (
+              <CustomerFormFields form={customerForm} onChange={(event) => handleDraftFieldChange(setCustomerForm, event)} />
+            )}
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <h3>Cemetery</h3>
+              <span className="meta">Type to pick an existing cemetery or create a new one.</span>
+            </div>
+            <CemeteryFormFields
+              form={cemeteryForm}
+              cemeteries={cemeteries}
+              selectedCemetery={selectedCemetery}
+              onSelectCemetery={(cemetery) => {
+                setSelectedCemeteryId(String(cemetery.id));
+                setCemeteryForm(createCemeteryFormState(cemetery));
+              }}
+              onClearSelection={() => {
+                setSelectedCemeteryId('');
+                setCemeteryForm(createCemeteryFormState());
+              }}
+              onNameChange={(nextValue) => {
+                const currentSelected = selectedCemetery;
+                const shouldClearSelection = Boolean(
+                  currentSelected && normalizeLookup(currentSelected.name) !== normalizeLookup(nextValue)
+                );
+                setCemeteryForm((prev) => ({
+                  ...prev,
+                  name: nextValue,
+                  ...(shouldClearSelection ? { id: '' } : {})
+                }));
+                if (shouldClearSelection) {
+                  setSelectedCemeteryId('');
+                }
+              }}
+              onChange={(event) => handleDraftFieldChange(setCemeteryForm, event)}
+              secondaryDisabled={Boolean(selectedCemeteryId)}
+            />
+          </div>
+        </section>
+
+        <div className="card">
+          <h3>Stone Information</h3>
+          <MemorialFormFields
+            form={memorialForm}
+            onChange={(event) => handleDraftFieldChange(setMemorialForm, event)}
+            onPhotoNamesChange={(photoNames) => setMemorialForm((prev) => ({ ...prev, photo_names: photoNames }))}
+          />
+        </div>
+
+        {submitState.error && <div className="form-error">{submitState.error}</div>}
+        {submitState.success && <div className="card form-success"><strong>{submitState.success}</strong></div>}
+        <button className="primary-btn" type="submit" disabled={submitState.loading}>
+          {submitState.loading ? 'Saving...' : 'Save Onboarding Record'}
+        </button>
+      </form>
+    </>
+  );
+}
+
+ROUTES.admin.dashboard = DashboardPageModern;
+ROUTES.admin.memorials = MemorialsPageModern;
+ROUTES.admin.customers = CustomersPageModern;
+ROUTES.admin.cemeteries = CemeteriesPageModern;
+ROUTES.admin.onboarding = OnboardingPageModern;
+ROUTES.frontdesk.dashboard = FrontDeskDashboardPageModern;
+ROUTES.frontdesk.memorials = MemorialsPageModern;
+ROUTES.frontdesk.customers = CustomersPageModern;
+ROUTES.frontdesk.cemeteries = CemeteriesPageModern;
+ROUTES.frontdesk.onboarding = OnboardingPageModern;
+
 function LoginPage({ form, authState, onChange, onSubmit }) {
   return (
     <div className="main main-login">
@@ -3603,6 +6137,8 @@ function LoginPage({ form, authState, onChange, onSubmit }) {
 
         <div className="card auth-card">
           <form className="form" onSubmit={onSubmit}>
+            {authState.loading && <p className="meta">Checking session...</p>}
+
             <label>Email or Username</label>
             <input
               type="text"
@@ -3800,31 +6336,15 @@ function Layout({ role, sessionUser, navItems, currentPath, onLogout, children }
 
       <div className="main">
         <header className="topbar">
-          <button
-            className="hamburger"
-            aria-label="Toggle navigation"
-            aria-expanded={isSidebarOpen}
-            onClick={handleToggleMenu}
-          >
-            <span className="bar"></span>
-          </button>
           <div className="search">
             <input type="text" placeholder="Search memorials, customers, cemeteries, GPS..." />
           </div>
 
           <div className="topbar-actions">
             <div className="role-chip">
-              {sessionUser?.profile_photo_url ? (
-                <img className="topbar-avatar" src={sessionUser.profile_photo_url} alt={sessionUser?.full_name || 'Profile'} />
-              ) : (
-                <div className="topbar-avatar topbar-avatar-empty">
-                  {(sessionUser?.full_name || sessionUser?.username || 'U').slice(0, 1).toUpperCase()}
-                </div>
-              )}
               <strong>{sessionUser?.full_name || sessionUser?.username || 'User'}</strong>
               <span>{ROLE_CONFIGS[role]?.label || role}</span>
             </div>
-            <div className="bell"></div>
             <button className="ghost-btn" type="button" onClick={onLogout}>Logout</button>
           </div>
         </header>
@@ -3867,14 +6387,14 @@ function App() {
           user: json.user || null,
           error: ''
         });
-      } catch (err) {
+      } catch {
         if (cancelled) return;
         setAuthState({
           loading: false,
           submitting: false,
           authenticated: false,
           user: null,
-          error: err.message || 'Failed to load session.'
+          error: ''
         });
       }
     }
@@ -3885,6 +6405,7 @@ function App() {
 
   useEffect(() => {
     if (authState.loading) return;
+    if (page === 'public-survey') return;
     if (!authState.authenticated) {
       if (path !== LOGIN_PATH && path !== SETUP_PASSWORD_PATH) navigate(LOGIN_PATH);
       return;
@@ -3895,7 +6416,7 @@ function App() {
     if (path !== canonicalPath) {
       navigate(canonicalPath);
     }
-  }, [authState.authenticated, authState.loading, canonicalPath, navigate, path]);
+  }, [authState.authenticated, authState.loading, canonicalPath, navigate, path, page]);
 
   async function handleLogin(event) {
     event.preventDefault();
@@ -3974,15 +6495,18 @@ function App() {
     }));
   }
 
+  if (page === 'public-survey') {
+    return <PublicSurveyPage surveyToken={route.surveyToken} />;
+  }
+
   if (authState.loading) {
     return (
-      <div className="main main-login">
-        <main className="content">
-          <div className="card auth-card">
-            <p className="meta">Loading session...</p>
-          </div>
-        </main>
-      </div>
+      <LoginPage
+        form={authForm}
+        authState={authState}
+        onChange={handleAuthInputChange}
+        onSubmit={handleLogin}
+      />
     );
   }
 
