@@ -67,10 +67,6 @@ function getApiBase() {
   const configured = String(window.__API_BASE__ || '').trim();
   if (configured.startsWith('/')) return configured.replace(/\/+$/, '');
   if (/^https?:\/\/[^/]+/i.test(configured)) return configured.replace(/\/+$/, '');
-
-  const { protocol, port } = window.location;
-  const isHttp = protocol === 'http:' || protocol === 'https:';
-  if (isHttp && port !== '8000') return 'http://127.0.0.1:8000';
   return '';
 }
 
