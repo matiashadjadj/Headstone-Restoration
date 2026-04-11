@@ -68,7 +68,7 @@ else
 fi
 
 # Use the default settings module unless the caller overrides it.
-export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-backend.config.settings}"
+export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-config.settings}"
 
 # Print active DB target to avoid confusion when switching environments.
 REPO_ROOT="$REPO_ROOT" python - <<'PY'
@@ -79,7 +79,7 @@ from pathlib import Path
 repo_root = Path(os.environ["REPO_ROOT"]).resolve()
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", os.environ.get("DJANGO_SETTINGS_MODULE", "backend.config.settings"))
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", os.environ.get("DJANGO_SETTINGS_MODULE", "config.settings"))
 
 from django.conf import settings  # noqa: E402
 

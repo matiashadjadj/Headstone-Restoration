@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Headstone Restoration FSM</title>
+  <link rel="stylesheet" href="styles.css?v=20260401-tech-clickable-jobs" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.20/index.global.min.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    // When frontend is served on a separate dev port, target Django on :8000.
+    (function() {
+      const { protocol, port } = window.location;
+      const isHttp = protocol === 'http:' || protocol === 'https:';
+      const isSameOriginDjango = isHttp && port === '8000';
+
+      if (isSameOriginDjango) {
+        window.__API_BASE__ = '/api';
+        return;
+      }
+
+      window.__API_BASE__ = 'http://127.0.0.1:8000/api';
+    })();
+  </script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.20/index.global.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="text/babel" data-presets="env,react" src="app.jsx?v=20260401-admin-manual-or-survey"></script>
+</body>
+</html>
