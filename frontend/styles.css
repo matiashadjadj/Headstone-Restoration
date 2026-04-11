@@ -1280,18 +1280,64 @@ textarea {
 }
 
 .checkbox-card {
-  display: flex;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  background: #f8fafc;
+  gap: 14px;
+  min-height: 76px;
+  padding: 16px 18px;
+  border: 1px solid #dbe3ef;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.02), 0 12px 24px rgba(15, 23, 42, 0.04);
+  cursor: pointer;
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease, background-color 140ms ease;
+}
+
+.checkbox-card:hover {
+  border-color: #93c5fd;
+  box-shadow: 0 14px 28px rgba(37, 99, 235, 0.08);
+  transform: translateY(-1px);
+}
+
+.checkbox-card:focus-within {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+
+.checkbox-card input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  flex: 0 0 auto;
+  accent-color: #2563eb;
+  cursor: pointer;
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+.checkbox-card input[type="checkbox"]:checked {
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+
+.checkbox-card input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.16);
 }
 
 .checkbox-card span {
-  font-size: 13px;
-  color: #334155;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #0f172a;
+}
+
+@supports selector(.checkbox-card:has(input:checked)) {
+  .checkbox-card:has(input:checked) {
+    border-color: #93c5fd;
+    background: linear-gradient(180deg, #eff6ff 0%, #ffffff 100%);
+    box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.22), 0 18px 34px rgba(37, 99, 235, 0.1);
+  }
 }
 
 .table-action-cell {
@@ -1355,7 +1401,7 @@ textarea {
   color: #14532d;
 }
 
-input, select {
+input:not([type="checkbox"]):not([type="radio"]), select {
   width: 100%;
   padding: 12px 14px;
   border-radius: 12px;
@@ -1390,7 +1436,7 @@ input:disabled, select:disabled, textarea:disabled {
   cursor: not-allowed;
 }
 
-.form-field > input,
+.form-field > input:not([type="checkbox"]):not([type="radio"]),
 .form-field > select,
 .form-field > textarea {
   width: 100%;
@@ -1642,7 +1688,7 @@ body.theme-dark {
 
 body.theme-dark .topbar,
 body.theme-dark .card,
-body.theme-dark input,
+body.theme-dark input:not([type="checkbox"]):not([type="radio"]),
 body.theme-dark select,
 body.theme-dark textarea,
 body.theme-dark .search-results,
@@ -1682,6 +1728,36 @@ body.theme-dark .autocomplete-option strong {
   color: #e2e8f0;
 }
 
+body.theme-dark .checkbox-card {
+  background: linear-gradient(180deg, #111b2e 0%, #0f172a 100%);
+  border-color: #1f2e46;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03), 0 14px 28px rgba(0, 0, 0, 0.22);
+}
+
+body.theme-dark .checkbox-card:hover {
+  border-color: #3b82f6;
+}
+
+body.theme-dark .checkbox-card span {
+  color: #e2e8f0;
+}
+
+body.theme-dark .checkbox-card input[type="checkbox"] {
+  accent-color: #3b82f6;
+}
+
+body.theme-dark .checkbox-card input[type="checkbox"]:checked {
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.16);
+}
+
+@supports selector(.checkbox-card:has(input:checked)) {
+  body.theme-dark .checkbox-card:has(input:checked) {
+    border-color: #3b82f6;
+    background: linear-gradient(180deg, #17253b 0%, #111b2e 100%);
+    box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.22), 0 18px 34px rgba(0, 0, 0, 0.24);
+  }
+}
+
 body.theme-dark .autocomplete-menu {
   background: #111b2e;
   border-color: #1f2e46;
@@ -1702,7 +1778,7 @@ body.theme-dark .autocomplete-selected-pill {
   color: #dbeafe;
 }
 
-body.theme-dark input:focus,
+body.theme-dark input:not([type="checkbox"]):not([type="radio"]):focus,
 body.theme-dark select:focus,
 body.theme-dark textarea:focus {
   background: #111b2e;
