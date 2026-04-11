@@ -6064,7 +6064,7 @@ function OnboardingPageModern() {
               }}
               onClearSelection={() => {
                 setSelectedCemeteryId('');
-                setCemeteryForm((prev) => ({ ...prev, id: '' }));
+                setCemeteryForm(createCemeteryFormState());
               }}
               onNameChange={(nextValue) => {
                 const currentSelected = selectedCemetery;
