@@ -6342,13 +6342,6 @@ function Layout({ role, sessionUser, navItems, currentPath, onLogout, children }
 
           <div className="topbar-actions">
             <div className="role-chip">
-              {sessionUser?.profile_photo_url ? (
-                <img className="topbar-avatar" src={sessionUser.profile_photo_url} alt={sessionUser?.full_name || 'Profile'} />
-              ) : (
-                <div className="topbar-avatar topbar-avatar-empty">
-                  {(sessionUser?.full_name || sessionUser?.username || 'U').slice(0, 1).toUpperCase()}
-                </div>
-              )}
               <strong>{sessionUser?.full_name || sessionUser?.username || 'User'}</strong>
               <span>{ROLE_CONFIGS[role]?.label || role}</span>
             </div>
