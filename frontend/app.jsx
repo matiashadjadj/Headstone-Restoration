@@ -6126,6 +6126,8 @@ function LoginPage({ form, authState, onChange, onSubmit }) {
 
         <div className="card auth-card">
           <form className="form" onSubmit={onSubmit}>
+            {authState.loading && <p className="meta">Checking session...</p>}
+
             <label>Email or Username</label>
             <input
               type="text"
@@ -6381,14 +6383,14 @@ function App() {
           user: json.user || null,
           error: ''
         });
-      } catch (err) {
+      } catch {
         if (cancelled) return;
         setAuthState({
           loading: false,
           submitting: false,
           authenticated: false,
           user: null,
-          error: err.message || 'Failed to load session.'
+          error: ''
         });
       }
     }
@@ -6495,13 +6497,12 @@ function App() {
 
   if (authState.loading) {
     return (
-      <div className="main main-login">
-        <main className="content">
-          <div className="card auth-card">
-            <p className="meta">Loading session...</p>
-          </div>
-        </main>
-      </div>
+      <LoginPage
+        form={authForm}
+        authState={authState}
+        onChange={handleAuthInputChange}
+        onSubmit={handleLogin}
+      />
     );
   }
 
