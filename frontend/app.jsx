@@ -867,6 +867,92 @@ function useHashPath() {
   return [path, navigate];
 }
 
+function SearchSelect({
+  value,
+  onChange,
+  options,
+  placeholder = 'Search...',
+  emptyText = 'No matches found.',
+  getOptionValue = (option) => option?.id,
+  getOptionLabel = (option) => option?.label || option?.name || '',
+  getOptionSearchText = (option) => `${getOptionLabel(option)}`,
+  getOptionMeta = null,
+  disabled = false
+}) {
+  const normalizedValue = String(value || '');
+  const selectedOption = (options || []).find((option) => String(getOptionValue(option)) === normalizedValue) || null;
+  const selectedLabel = selectedOption ? getOptionLabel(selectedOption) : '';
+  const [query, setQuery] = useState(selectedLabel);
+  const [isOpen, setIsOpen] = useState(false);
+
+  useEffect(() => {
+    setQuery(selectedLabel);
+  }, [selectedLabel]);
+
+  const filteredOptions = useMemo(() => {
+    const list = Array.isArray(options) ? options : [];
+    const needle = query.trim().toLowerCase();
+    if (!needle) return list.slice(0, 8);
+    return list.filter((option) => getOptionSearchText(option).toLowerCase().includes(needle)).slice(0, 8);
+  }, [getOptionSearchText, options, query]);
+
+  function handleInputChange(event) {
+    const nextQuery = event.target.value;
+    setQuery(nextQuery);
+    setIsOpen(true);
+    if (normalizedValue && nextQuery !== selectedLabel) {
+      onChange('');
+    }
+  }
+
+  function handleSelect(option) {
+    onChange(String(getOptionValue(option)));
+    setQuery(getOptionLabel(option));
+    setIsOpen(false);
+  }
+
+  return (
+    <div className={`search-select${disabled ? ' disabled' : ''}`}>
+      <input
+        type="text"
+        value={query}
+        onChange={handleInputChange}
+        onFocus={() => setIsOpen(true)}
+        onBlur={() => window.setTimeout(() => setIsOpen(false), 120)}
+        placeholder={placeholder}
+        disabled={disabled}
+      />
+      {selectedOption && (
+        <div className="search-select-status">
+          Selected: <strong>{selectedLabel}</strong>
+        </div>
+      )}
+      {isOpen && !disabled && (
+        <div className="search-select-results">
+          {filteredOptions.length === 0 && <div className="search-select-empty">{emptyText}</div>}
+          {filteredOptions.map((option) => {
+            const optionValue = String(getOptionValue(option));
+            const optionLabel = getOptionLabel(option);
+            const optionMeta = typeof getOptionMeta === 'function' ? getOptionMeta(option) : '';
+            return (
+              <button
+                key={optionValue}
+                type="button"
+                className={`search-select-option${optionValue === normalizedValue ? ' active' : ''}`}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => handleSelect(option)}
+              >
+                <span className="search-select-option-label">{optionLabel}</span>
+                {optionMeta ? <span className="search-select-option-meta">{optionMeta}</span> : null}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function parseRoute(path, role) {
   const normalized = normalizePath(path);
   const hasActiveRole = Boolean(role && ROLE_CONFIGS[role]);
@@ -1349,32 +1435,39 @@ function MemorialsPage() {
           </div>
           <form className="form" onSubmit={handleCreate}>
             <label>Customer</label>
-            <select
+            <SearchSelect
               value={form.customer_id}
-              onChange={(event) => setForm((prev) => ({ ...prev, customer_id: event.target.value }))}
-              required
-            >
-              <option value="">Select customer</option>
-              {(customerState.data || []).map((customer) => (
-                <option key={customer.id} value={customer.id}>
-                  #{customer.id} · {customer.full_name}
-                </option>
-              ))}
-            </select>
+              onChange={(nextValue) => setForm((prev) => ({ ...prev, customer_id: nextValue }))}
+              options={customerState.data || []}
+              placeholder="Search customers by name, email, phone, or ID"
+              emptyText="No customers match that search."
+              getOptionLabel={(customer) => customer.full_name || `Customer #${customer.id}`}
+              getOptionSearchText={(customer) => [
+                customer.id,
+                customer.full_name,
+                customer.email,
+                customer.phone
+              ].filter(Boolean).join(' ')}
+              getOptionMeta={(customer) => `#${customer.id} · ${customer.email || customer.phone || 'No contact info'}`}
+            />
 
             <label>Cemetery</label>
-            <select
+            <SearchSelect
               value={form.cemetery_id}
-              onChange={(event) => setForm((prev) => ({ ...prev, cemetery_id: event.target.value }))}
-              required
-            >
-              <option value="">Select cemetery</option>
-              {(cemeteryState.data || []).map((cemetery) => (
-                <option key={cemetery.id} value={cemetery.id}>
-                  #{cemetery.id} · {cemetery.name}
-                </option>
-              ))}
-            </select>
+              onChange={(nextValue) => setForm((prev) => ({ ...prev, cemetery_id: nextValue }))}
+              options={cemeteryState.data || []}
+              placeholder="Search cemeteries by name, address, city, or ID"
+              emptyText="No cemeteries match that search."
+              getOptionLabel={(cemetery) => cemetery.name || `Cemetery #${cemetery.id}`}
+              getOptionSearchText={(cemetery) => [
+                cemetery.id,
+                cemetery.name,
+                cemetery.address,
+                cemetery.city,
+                cemetery.state
+              ].filter(Boolean).join(' ')}
+              getOptionMeta={(cemetery) => `#${cemetery.id} · ${[cemetery.city, cemetery.state].filter(Boolean).join(', ') || cemetery.address || 'No address'}`}
+            />
 
             <div className="field-row">
               <div>
@@ -2283,34 +2376,42 @@ function SchedulingPage() {
 
             <form className="form" onSubmit={handleCreateJob}>
               <label>Customer</label>
-              <select
+              <SearchSelect
                 value={createCustomerId}
-                onChange={(event) => setCreateCustomerId(event.target.value)}
-                required
-              >
-                <option value="">Select customer</option>
-                {customerOptions.map((customer) => (
-                  <option key={customer.id} value={customer.id}>
-                    #{customer.id} · {customer.full_name} · {customer.memorials_count || 0} memorial(s)
-                  </option>
-                ))}
-              </select>
+                onChange={setCreateCustomerId}
+                options={customerOptions}
+                placeholder="Search customers by name, ID, email, or phone"
+                emptyText="No customers match that search."
+                getOptionLabel={(customer) => customer.full_name || `Customer #${customer.id}`}
+                getOptionSearchText={(customer) => [
+                  customer.id,
+                  customer.full_name,
+                  customer.email,
+                  customer.phone,
+                  customer.memorials_count
+                ].filter(Boolean).join(' ')}
+                getOptionMeta={(customer) => `#${customer.id} · ${customer.memorials_count || 0} memorial(s)`}
+              />
 
               {createCustomerId && memorialsForCreateCustomer.length > 1 && (
                 <>
                   <label>Memorial</label>
-                  <select
+                  <SearchSelect
                     value={createMemorialId}
-                    onChange={(event) => setCreateMemorialId(event.target.value)}
-                    required
-                  >
-                    <option value="">Select memorial</option>
-                    {memorialsForCreateCustomer.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        #{m.id} · {m.cemetery || 'Cemetery'}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={setCreateMemorialId}
+                    options={memorialsForCreateCustomer}
+                    placeholder="Search memorials by cemetery, stone name, or ID"
+                    emptyText="No memorials match that search."
+                    getOptionLabel={(memorial) => memorial.name_on_stone || memorial.customer || `Memorial #${memorial.id}`}
+                    getOptionSearchText={(memorial) => [
+                      memorial.id,
+                      memorial.name_on_stone,
+                      memorial.customer,
+                      memorial.cemetery,
+                      memorial.plot_number
+                    ].filter(Boolean).join(' ')}
+                    getOptionMeta={(memorial) => `#${memorial.id} · ${memorial.cemetery || 'Cemetery'}${memorial.plot_number ? ` · Plot ${memorial.plot_number}` : ''}`}
+                  />
                   <p className="meta">This customer has multiple memorials, so pick which one this job belongs to.</p>
                 </>
               )}
@@ -2326,16 +2427,17 @@ function SchedulingPage() {
               )}
 
               <label>Service</label>
-              <select
+              <SearchSelect
                 value={createServiceOptionId}
-                onChange={(event) => setCreateServiceOptionId(event.target.value)}
-                required
-              >
-                <option value="">Select service</option>
-                {(serviceOptionsState.data || []).map((opt) => (
-                  <option key={opt.id} value={opt.id}>{opt.name}</option>
-                ))}
-              </select>
+                onChange={setCreateServiceOptionId}
+                options={serviceOptionsState.data || []}
+                placeholder="Search service types"
+                emptyText="No services match that search."
+                getOptionLabel={(option) => option.name || `Service #${option.id}`}
+                getOptionSearchText={(option) => [option.id, option.name, option.description].filter(Boolean).join(' ')}
+                getOptionMeta={(option) => option.description || 'Configured service option'}
+                disabled={serviceOptionsState.loading}
+              />
               {!serviceOptionsState.loading && (!serviceOptionsState.data || serviceOptionsState.data.length === 0) && (
                 <p className="meta">No services are configured yet. Add them in Admin Settings.</p>
               )}
@@ -5238,9 +5340,24 @@ function CustomersPageModern() {
     [customerState.data, memorials, workflowStore]
   );
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [customerQuery, setCustomerQuery] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(createCustomerFormState());
   const [saveState, setSaveState] = useState({ loading: false, error: '', success: '' });
+
+  const filteredCustomers = useMemo(() => {
+    const needle = customerQuery.trim().toLowerCase();
+    if (!needle) return customers;
+    return customers.filter((customer) => [
+      customer.id,
+      customer.full_name,
+      customer.email,
+      customer.phone,
+      customer.how_heard_about_us,
+      customer.city,
+      customer.state
+    ].filter(Boolean).join(' ').toLowerCase().includes(needle));
+  }, [customerQuery, customers]);
 
   useEffect(() => {
     if (!customers.length) {
@@ -5370,8 +5487,14 @@ function CustomersPageModern() {
         <div className="card">
           <div className="card-header">
             <h3>Customer List</h3>
-            <span className="meta">{customers.length} records</span>
+            <span className="meta">{filteredCustomers.length} of {customers.length} records</span>
           </div>
+          <input
+            type="text"
+            value={customerQuery}
+            onChange={(event) => setCustomerQuery(event.target.value)}
+            placeholder="Search customers by name, email, phone, referral source, city, or ID"
+          />
           <div className="table-scroll">
             <table>
               <thead>
@@ -5385,7 +5508,10 @@ function CustomersPageModern() {
               <tbody>
                 {customerState.loading && <tr><td colSpan="4" className="meta">Loading customers...</td></tr>}
                 {!customerState.loading && customers.length === 0 && <tr><td colSpan="4" className="meta">No customers yet.</td></tr>}
-                {!customerState.loading && customers.map((customer) => (
+                {!customerState.loading && customers.length > 0 && filteredCustomers.length === 0 && (
+                  <tr><td colSpan="4" className="meta">No customers match that search.</td></tr>
+                )}
+                {!customerState.loading && filteredCustomers.map((customer) => (
                   <tr key={customer.id}>
                     <td>
                       <strong>{customer.full_name}</strong>
@@ -5783,12 +5909,21 @@ function OnboardingPageModern() {
             {customerMode === 'existing' && (
               <>
                 <label>Existing Customer</label>
-                <select value={selectedCustomerId} onChange={(event) => setSelectedCustomerId(event.target.value)} required>
-                  <option value="">Select customer</option>
-                  {customers.map((customer) => (
-                    <option key={customer.id} value={customer.id}>{customer.full_name}</option>
-                  ))}
-                </select>
+                <SearchSelect
+                  value={selectedCustomerId}
+                  onChange={setSelectedCustomerId}
+                  options={customers}
+                  placeholder="Search customers by name, email, or phone"
+                  emptyText="No customers match that search."
+                  getOptionLabel={(customer) => customer.full_name || `Customer #${customer.id}`}
+                  getOptionSearchText={(customer) => [
+                    customer.full_name,
+                    customer.email,
+                    customer.phone,
+                    customer.id
+                  ].filter(Boolean).join(' ')}
+                  getOptionMeta={(customer) => [customer.email || 'No email', customer.phone || 'No phone'].join(' · ')}
+                />
                 <label>How They Heard About Us</label>
                 <input
                   name="how_heard_about_us"
@@ -5825,12 +5960,22 @@ function OnboardingPageModern() {
             {cemeteryMode === 'existing' && (
               <>
                 <label>Existing Cemetery</label>
-                <select value={selectedCemeteryId} onChange={(event) => setSelectedCemeteryId(event.target.value)} required>
-                  <option value="">Select cemetery</option>
-                  {cemeteries.map((cemetery) => (
-                    <option key={cemetery.id} value={cemetery.id}>{cemetery.name}</option>
-                  ))}
-                </select>
+                <SearchSelect
+                  value={selectedCemeteryId}
+                  onChange={setSelectedCemeteryId}
+                  options={cemeteries}
+                  placeholder="Search cemeteries by name, city, or address"
+                  emptyText="No cemeteries match that search."
+                  getOptionLabel={(cemetery) => cemetery.name || `Cemetery #${cemetery.id}`}
+                  getOptionSearchText={(cemetery) => [
+                    cemetery.name,
+                    cemetery.address,
+                    cemetery.city,
+                    cemetery.state,
+                    cemetery.id
+                  ].filter(Boolean).join(' ')}
+                  getOptionMeta={(cemetery) => [cemetery.city, cemetery.state].filter(Boolean).join(', ') || cemetery.address || 'No address'}
+                />
               </>
             )}
             {cemeteryMode === 'new' && (

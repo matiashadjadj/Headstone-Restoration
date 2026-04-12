@@ -944,6 +944,76 @@ input, select {
   border: 1px solid #e5e7eb;
 }
 
+.search-select {
+  position: relative;
+}
+
+.search-select input {
+  width: 100%;
+}
+
+.search-select.disabled {
+  opacity: 0.7;
+}
+
+.search-select-status {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.search-select-results {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  max-height: 240px;
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px solid #dbe3ef;
+  border-radius: 12px;
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.12);
+}
+
+.search-select-option,
+.search-select-empty {
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  background: #ffffff;
+  border: none;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.search-select-option:last-child,
+.search-select-empty:last-child {
+  border-bottom: none;
+}
+
+.search-select-option {
+  cursor: pointer;
+}
+
+.search-select-option:hover,
+.search-select-option.active {
+  background: #f8fafc;
+}
+
+.search-select-option-label {
+  display: block;
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.search-select-option-meta,
+.search-select-empty {
+  display: block;
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 12px;
+}
+
 .field-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
