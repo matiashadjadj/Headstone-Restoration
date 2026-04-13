@@ -1790,6 +1790,26 @@ function SchedulingPage() {
     () => (Array.isArray(customerState.data) ? customerState.data : []),
     [customerState.data]
   );
+  const [createCustomerSearch, setCreateCustomerSearch] = useState('');
+  const normalizedCreateCustomerSearch = createCustomerSearch.trim().toLowerCase();
+
+  const filteredCustomerOptions = useMemo(() => {
+    if (!normalizedCreateCustomerSearch) return customerOptions;
+    return customerOptions.filter((customer) => {
+      const searchIndex = [
+        customer.full_name,
+        customer.email,
+        customer.phone,
+        customer.city,
+        customer.state,
+        customer.postal_code
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return searchIndex.includes(normalizedCreateCustomerSearch);
+    });
+  }, [customerOptions, normalizedCreateCustomerSearch]);
 
   const memorialsForCreateCustomer = useMemo(
     () => memorialOptions.filter((memorial) => String(memorial.customer_id) === String(createCustomerId)),
@@ -2300,18 +2320,35 @@ function SchedulingPage() {
 
             <form className="form" onSubmit={handleCreateJob}>
               <label>Customer</label>
+              <div className="entity-search entity-search-stacked">
+                <input
+                  type="search"
+                  value={createCustomerSearch}
+                  onChange={(event) => setCreateCustomerSearch(event.target.value)}
+                  placeholder="Search customer by name, email, phone..."
+                  aria-label="Search customers for new job"
+                />
+                {createCustomerSearch && (
+                  <button className="ghost-btn" type="button" onClick={() => setCreateCustomerSearch('')}>
+                    Clear
+                  </button>
+                )}
+              </div>
               <select
                 value={createCustomerId}
                 onChange={(event) => setCreateCustomerId(event.target.value)}
                 required
               >
                 <option value="">Select customer</option>
-                {customerOptions.map((customer) => (
+                {filteredCustomerOptions.map((customer) => (
                   <option key={customer.id} value={customer.id}>
                     #{customer.id} · {customer.full_name} · {customer.memorials_count || 0} memorial(s)
                   </option>
                 ))}
               </select>
+              {!customerState.loading && customerOptions.length > 0 && filteredCustomerOptions.length === 0 && (
+                <p className="meta">No customers match that search.</p>
+              )}
 
               {createCustomerId && memorialsForCreateCustomer.length > 1 && (
                 <>
@@ -5328,7 +5365,29 @@ function MemorialsPageModern() {
   );
   const [selectedId, setSelectedId] = useState('');
   const [editor, setEditor] = useState(createMemorialFormState());
+  const [searchTerm, setSearchTerm] = useState('');
   const [saveState, setSaveState] = useState({ error: '', success: '' });
+  const normalizedSearchTerm = searchTerm.trim().toLowerCase();
+
+  const filteredMemorials = useMemo(() => {
+    if (!normalizedSearchTerm) return memorials;
+    return memorials.filter((memorial) => {
+      const searchIndex = [
+        memorial.name_on_stone,
+        memorial.customer,
+        memorial.cemetery,
+        memorial.material_label,
+        memorial.stone_style,
+        memorial.location_description,
+        memorial.notes,
+        memorial.regional_team
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return searchIndex.includes(normalizedSearchTerm);
+    });
+  }, [memorials, normalizedSearchTerm]);
 
   useEffect(() => {
     if (!memorials.length) {
@@ -5391,14 +5450,36 @@ function MemorialsPageModern() {
       <section className="grid-2 memorials-workspace">
         <div className="card">
           <div className="card-header">
-            <h3>Memorial Library</h3>
-            <span className="meta">{memorials.length} records</span>
+            <div>
+              <h3>Memorial Library</h3>
+              <span className="meta">
+                {filteredMemorials.length}
+                {normalizedSearchTerm ? ` of ${memorials.length}` : ''} records
+              </span>
+            </div>
+            <div className="entity-search">
+              <input
+                type="search"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Search stone, customer, cemetery..."
+                aria-label="Search memorials"
+              />
+              {searchTerm && (
+                <button className="ghost-btn" type="button" onClick={() => setSearchTerm('')}>
+                  Clear
+                </button>
+              )}
+            </div>
           </div>
           {memorialState.loading && <p className="meta">Loading memorials...</p>}
           {!memorialState.loading && memorials.length === 0 && <p className="meta">No memorials yet.</p>}
-          {!memorialState.loading && memorials.length > 0 && (
+          {!memorialState.loading && memorials.length > 0 && filteredMemorials.length === 0 && (
+            <p className="meta">No memorials match that search.</p>
+          )}
+          {!memorialState.loading && filteredMemorials.length > 0 && (
             <div className="record-stack">
-              {memorials.map((memorial) => (
+              {filteredMemorials.map((memorial) => (
                 <button
                   key={memorial.id}
                   type="button"
