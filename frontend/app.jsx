@@ -5483,7 +5483,9 @@ function CustomersPageModern() {
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(createCustomerFormState());
+  const [searchTerm, setSearchTerm] = useState('');
   const [saveState, setSaveState] = useState({ loading: false, error: '', success: '' });
+  const normalizedSearchTerm = searchTerm.trim().toLowerCase();
 
   useEffect(() => {
     if (!customers.length) {
@@ -5497,6 +5499,33 @@ function CustomersPageModern() {
       setForm(createCustomerFormState(customers[0]));
     }
   }, [customers, selectedCustomerId]);
+
+  const filteredCustomers = useMemo(() => {
+    if (!normalizedSearchTerm) return customers;
+    return customers.filter((customer) => {
+      const relatedMemorials = memorials.filter((memorial) => matchesCustomerRecord(memorial, customer));
+      const searchIndex = [
+        customer.full_name,
+        customer.email,
+        customer.phone,
+        customer.city,
+        customer.state,
+        customer.postal_code,
+        customer.how_heard_about_us,
+        customer.notes,
+        ...relatedMemorials.flatMap((memorial) => [
+          memorial.name_on_stone,
+          memorial.customer,
+          memorial.cemetery_name,
+          memorial.plot_display
+        ])
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return searchIndex.includes(normalizedSearchTerm);
+    });
+  }, [customers, memorials, normalizedSearchTerm]);
 
   function startCreate() {
     setEditingId(null);
@@ -5612,8 +5641,27 @@ function CustomersPageModern() {
 
         <div className="card">
           <div className="card-header">
-            <h3>Customer List</h3>
-            <span className="meta">{customers.length} records</span>
+            <div>
+              <h3>Customer List</h3>
+              <span className="meta">
+                {filteredCustomers.length}
+                {normalizedSearchTerm ? ` of ${customers.length}` : ''} records
+              </span>
+            </div>
+            <div className="customer-search">
+              <input
+                type="search"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Search name, email, phone, cemetery..."
+                aria-label="Search customers"
+              />
+              {searchTerm && (
+                <button className="ghost-btn" type="button" onClick={() => setSearchTerm('')}>
+                  Clear
+                </button>
+              )}
+            </div>
           </div>
           <div className="table-scroll">
             <table>
@@ -5628,7 +5676,10 @@ function CustomersPageModern() {
               <tbody>
                 {customerState.loading && <tr><td colSpan="4" className="meta">Loading customers...</td></tr>}
                 {!customerState.loading && customers.length === 0 && <tr><td colSpan="4" className="meta">No customers yet.</td></tr>}
-                {!customerState.loading && customers.map((customer) => (
+                {!customerState.loading && customers.length > 0 && filteredCustomers.length === 0 && (
+                  <tr><td colSpan="4" className="meta">No customers match that search.</td></tr>
+                )}
+                {!customerState.loading && filteredCustomers.map((customer) => (
                   <tr key={customer.id}>
                     <td>
                       <strong>{customer.full_name}</strong>
