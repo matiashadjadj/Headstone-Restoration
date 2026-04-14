@@ -2285,7 +2285,7 @@ function SchedulingPage() {
         </div>
       </section>
 
-      <section className="grid-2">
+      <section className="grid-2 scheduling-grid">
         <div className="card">
           <div className="card-header">
             <h3>Calendar</h3>
@@ -2412,7 +2412,7 @@ function SchedulingPage() {
         </div>
         )}
 
-        <div className="card">
+        <div className="card scheduling-side-card">
           <div className="card-header">
             <div>
               <h3>Unassigned Jobs</h3>
