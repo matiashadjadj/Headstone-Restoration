@@ -2419,10 +2419,10 @@ function SchedulingPage() {
               <p className="meta">Create now, assign later. Draft jobs stay here until a technician is scheduled.</p>
             </div>
           </div>
+          <div className="scroll-window scroll-window-lg scheduling-side-scroll">
           {unassignedServices.length === 0 && <p className="meta">No unassigned jobs right now.</p>}
           {unassignedServices.length > 0 && (
-            <div className="scroll-window scroll-window-lg">
-              <ul className="service-list scheduling-agenda">
+            <ul className="service-list scheduling-agenda">
               {unassignedServices.map((svc) => (
                 <li
                   key={svc.id}
@@ -2440,9 +2440,9 @@ function SchedulingPage() {
                   </div>
                 </li>
               ))}
-              </ul>
-            </div>
+            </ul>
           )}
+        </div>
         </div>
       </section>
 
@@ -3155,7 +3155,8 @@ function CustomersPage() {
 
         <div className="card">
           <h3>Customer List</h3>
-          <div className="table-scroll">
+          <div className="scroll-window scroll-window-lg">
+            <div className="table-scroll">
             <table>
               <thead>
                 <tr>
@@ -3183,6 +3184,7 @@ function CustomersPage() {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         </div>
       </section>
@@ -3267,7 +3269,9 @@ function CemeteriesPage() {
       {cemeteryState.error && <div className="card warn">Backend error: {cemeteryState.error}</div>}
 
       <div className="card">
-        <table>
+        <div className="scroll-window scroll-window-lg">
+          <div className="table-scroll">
+            <table>
           <thead>
             <tr>
               <th>Cemetery</th>
@@ -3288,7 +3292,9 @@ function CemeteriesPage() {
               </tr>
             ))}
           </tbody>
-        </table>
+            </table>
+          </div>
+        </div>
       </div>
 
       {saveState.success && <div className="card form-success"><strong>{saveState.success}</strong></div>}
@@ -6171,7 +6177,8 @@ function CustomersPageModern({ sessionUser }) {
             <p className="meta">No memorials are attached to this customer yet.</p>
           )}
           {selectedCustomer && selectedCustomerMemorials.length > 0 && (
-            <div className="record-stack compact-record-stack">
+            <div className="scroll-window scroll-window-lg">
+              <div className="record-stack compact-record-stack">
               {selectedCustomerMemorials.map((memorial) => (
                 <div key={memorial.id} className="record-card record-card-static">
                   <div className="record-card-header">
@@ -6186,6 +6193,7 @@ function CustomersPageModern({ sessionUser }) {
                   </div>
                 </div>
               ))}
+              </div>
             </div>
           )}
         </div>
@@ -6212,10 +6220,12 @@ function CustomersPageModern({ sessionUser }) {
           <p className="meta">No photos have been uploaded for this customer yet.</p>
         )}
         {selectedCustomer && selectedCustomerPhotos.length > 0 && (
-          <div className="photo-grid">
-            {selectedCustomerPhotos.map((photo) => (
-              <PhotoCard key={photo.id} photo={photo} onOpen={setSelectedPhoto} />
-            ))}
+          <div className="scroll-window scroll-window-lg">
+            <div className="photo-grid">
+              {selectedCustomerPhotos.map((photo) => (
+                <PhotoCard key={photo.id} photo={photo} onOpen={setSelectedPhoto} />
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -6333,22 +6343,24 @@ function CemeteriesPageModern() {
             <h3>Cemetery List</h3>
             <span className="meta">{cemeteries.length} locations</span>
           </div>
-          <div className="record-stack">
-            {cemeteries.map((cemetery) => (
-              <button
-                key={cemetery.id}
-                type="button"
-                className={`record-card${String(selectedCemeteryId) === String(cemetery.id) ? ' active' : ''}`}
-                onClick={() => handleSelectCemetery(cemetery)}
-              >
-                <strong>{cemetery.name}</strong>
-                <span>{[cemetery.city, cemetery.state].filter(Boolean).join(', ') || 'City and state not captured yet'}</span>
-                <div className="record-card-meta">
-                  <span>{cemetery.address || 'No address saved'}</span>
-                  <span>{cemetery.memorials_count || 0} stones</span>
-                </div>
-              </button>
-            ))}
+          <div className="scroll-window scroll-window-lg">
+            <div className="record-stack">
+              {cemeteries.map((cemetery) => (
+                <button
+                  key={cemetery.id}
+                  type="button"
+                  className={`record-card${String(selectedCemeteryId) === String(cemetery.id) ? ' active' : ''}`}
+                  onClick={() => handleSelectCemetery(cemetery)}
+                >
+                  <strong>{cemetery.name}</strong>
+                  <span>{[cemetery.city, cemetery.state].filter(Boolean).join(', ') || 'City and state not captured yet'}</span>
+                  <div className="record-card-meta">
+                    <span>{cemetery.address || 'No address saved'}</span>
+                    <span>{cemetery.memorials_count || 0} stones</span>
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </section>
@@ -6363,21 +6375,23 @@ function CemeteriesPageModern() {
           <p className="meta">No stones are attached to this cemetery yet.</p>
         )}
         {selectedCemetery && cemeteryMemorials.length > 0 && (
-          <div className="record-stack compact-record-stack">
-            {cemeteryMemorials.map((memorial) => (
-              <div key={memorial.id} className="record-card record-card-static">
-                <div className="record-card-header">
-                  <span className="stone-chip">Stone</span>
-                  <span className="meta">{memorial.material_label}</span>
+          <div className="scroll-window scroll-window-lg">
+            <div className="record-stack compact-record-stack">
+              {cemeteryMemorials.map((memorial) => (
+                <div key={memorial.id} className="record-card record-card-static">
+                  <div className="record-card-header">
+                    <span className="stone-chip">Stone</span>
+                    <span className="meta">{memorial.material_label}</span>
+                  </div>
+                  <strong>{memorial.name_on_stone || 'Memorial record'}</strong>
+                  <span>{memorial.location_description || 'Location details not captured yet'}</span>
+                  <div className="record-card-meta">
+                    <span>{memorial.stone_style || 'Style not captured'}</span>
+                    <span>{memorial.last_service_date ? `Last service ${formatDateOnly(memorial.last_service_date)}` : 'No service logged'}</span>
+                  </div>
                 </div>
-                <strong>{memorial.name_on_stone || 'Memorial record'}</strong>
-                <span>{memorial.location_description || 'Location details not captured yet'}</span>
-                <div className="record-card-meta">
-                  <span>{memorial.stone_style || 'Style not captured'}</span>
-                  <span>{memorial.last_service_date ? `Last service ${formatDateOnly(memorial.last_service_date)}` : 'No service logged'}</span>
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         )}
       </div>
