@@ -1526,12 +1526,6 @@ function SchedulingPage() {
   }, [servicesState.data]);
 
   useEffect(() => {
-    const options = Array.isArray(serviceOptionsState.data) ? serviceOptionsState.data : [];
-    if (!options.length || createServiceOptionId) return;
-    setCreateServiceOptionId(String(options[0].id));
-  }, [serviceOptionsState.data, createServiceOptionId]);
-
-  useEffect(() => {
     try {
       localStorage.setItem(SCHEDULING_DATE_KEY, calendarDate);
     } catch (err) {
@@ -1545,28 +1539,13 @@ function SchedulingPage() {
   );
 
   useEffect(() => {
-    if (!services.length) return;
-    if (selectedServiceId && selectedService) return;
-
-    const preferred = services.find((s) => !s.technician_id || s.status === 'draft') || services[0];
-    setSelectedServiceId(String(preferred.id));
-    setTechnicianId(preferred.technician_id ? String(preferred.technician_id) : '');
-    setScheduledStart(toDatetimeLocalInput(preferred.scheduled_start));
-    setEstimatedMinutes(preferred.estimated_minutes ? String(preferred.estimated_minutes) : '90');
-  }, [services, selectedServiceId, selectedService]);
-
-  useEffect(() => {
-    if (!services.length) return;
-    const hasAnyOnSelectedDate = services.some(
-      (svc) => svc.scheduled_start && toDateInputValue(svc.scheduled_start) === calendarDate
-    );
-    if (hasAnyOnSelectedDate) return;
-
-    const firstScheduled = services.find((svc) => Boolean(svc.scheduled_start));
-    if (firstScheduled) {
-      setCalendarDate(toDateInputValue(firstScheduled.scheduled_start));
-    }
-  }, [services, calendarDate]);
+    if (!selectedServiceId) return;
+    if (selectedService) return;
+    setSelectedServiceId('');
+    setTechnicianId('');
+    setScheduledStart('');
+    setEstimatedMinutes('90');
+  }, [selectedServiceId, selectedService]);
 
   function syncFormFromService(serviceId, options = {}) {
     const svc = services.find((item) => String(item.id) === String(serviceId));
@@ -1842,11 +1821,13 @@ function SchedulingPage() {
   );
 
   useEffect(() => {
-    if (!selectedServiceId || !schedulableServices.length) return;
+    if (!selectedServiceId) return;
     const stillSchedulable = schedulableServices.some((svc) => String(svc.id) === String(selectedServiceId));
-    if (!stillSchedulable) {
-      syncFormFromService(schedulableServices[0].id, { resetState: false });
-    }
+    if (stillSchedulable) return;
+    setSelectedServiceId('');
+    setTechnicianId('');
+    setScheduledStart('');
+    setEstimatedMinutes('90');
   }, [selectedServiceId, schedulableServices]);
 
   useEffect(() => {
@@ -4693,9 +4674,8 @@ function CemeteryAutocompleteField({
   const query = normalizeLookup(value);
   const suggestions = useMemo(() => {
     const rows = Array.isArray(cemeteries) ? cemeteries : [];
-    const matches = query
-      ? rows.filter((cemetery) => getCemeteryLookupText(cemetery).includes(query))
-      : rows;
+    if (!query) return [];
+    const matches = rows.filter((cemetery) => getCemeteryLookupText(cemetery).includes(query));
     return matches.slice(0, 6);
   }, [cemeteries, query]);
 
@@ -4768,7 +4748,6 @@ function CemeteryAutocompleteField({
             onChange(event.target.value);
             setIsOpen(true);
           }}
-          onFocus={() => setIsOpen(true)}
           onKeyDown={handleKeyDown}
           placeholder="Start typing a cemetery name"
           autoComplete="off"
@@ -4790,7 +4769,7 @@ function CemeteryAutocompleteField({
           </button>
         </div>
       )}
-      {isOpen && (
+      {isOpen && query && (
         <div className="autocomplete-menu" role="listbox">
           {suggestions.length > 0 ? (
             suggestions.map((cemetery, index) => (
@@ -5390,12 +5369,9 @@ function MemorialsPageModern() {
   }, [memorials, normalizedSearchTerm]);
 
   useEffect(() => {
-    if (!memorials.length) {
-      setSelectedId('');
-      return;
-    }
+    if (!selectedId) return;
     const exists = memorials.some((row) => String(row.id) === String(selectedId));
-    if (!exists) setSelectedId(String(memorials[0].id));
+    if (!exists) setSelectedId('');
   }, [memorials, selectedId]);
 
   const selectedMemorial = useMemo(
@@ -5569,15 +5545,12 @@ function CustomersPageModern() {
   const normalizedSearchTerm = searchTerm.trim().toLowerCase();
 
   useEffect(() => {
-    if (!customers.length) {
-      setSelectedCustomerId('');
-      return;
-    }
+    if (!selectedCustomerId) return;
     const exists = customers.some((row) => String(row.id) === String(selectedCustomerId));
     if (!exists) {
-      setSelectedCustomerId(String(customers[0].id));
-      setEditingId(customers[0].id);
-      setForm(createCustomerFormState(customers[0]));
+      setSelectedCustomerId('');
+      setEditingId(null);
+      setForm(createCustomerFormState());
     }
   }, [customers, selectedCustomerId]);
 

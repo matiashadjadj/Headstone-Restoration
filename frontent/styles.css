@@ -375,6 +375,39 @@ body {
   gap: 12px;
 }
 
+.customer-search,
+.entity-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.entity-search-stacked {
+  margin-bottom: 8px;
+}
+
+.customer-search input,
+.entity-search input {
+  width: min(320px, 100%);
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #ffffff;
+  font-size: 14px;
+}
+
+.entity-search-stacked input {
+  width: 100%;
+}
+
+.customer-search input:focus,
+.entity-search input:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
 .card h3 {
   font-size: 16px;
   margin-bottom: 12px;
