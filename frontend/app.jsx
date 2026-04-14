@@ -63,6 +63,9 @@ const ROLE_CONFIGS = {
   }
 };
 
+const BRAND_LOGO_HEADER_SRC = 'logo-header.png';
+const BRAND_LOGO_ICON_SRC = 'logo-icon.png';
+
 // All API calls go through the same base so the frontend and Django share origin.
 function normalizeApiBase(value) {
   const configured = String(value || '').trim();
@@ -89,6 +92,207 @@ function getApiBase() {
 }
 
 const API_BASE = getApiBase();
+
+function BrandMark({ variant = 'icon', className = '', decorative = false }) {
+  const src = variant === 'header' ? BRAND_LOGO_HEADER_SRC : BRAND_LOGO_ICON_SRC;
+  return (
+    <img
+      src={src}
+      alt={decorative ? '' : 'Headstone Restoration'}
+      aria-hidden={decorative ? 'true' : undefined}
+      className={className}
+      draggable="false"
+    />
+  );
+}
+
+function getPhotoTitle(photo) {
+  return photo?.customer_name || photo?.memorial_name || photo?.job_title || `Photo #${photo?.id || ''}`;
+}
+
+function getPhotoSubtitle(photo) {
+  return photo?.job_title || photo?.memorial_name || photo?.cemetery_name || 'Memorial photo';
+}
+
+function PhotoCard({ photo, onOpen }) {
+  const title = getPhotoTitle(photo);
+  const subtitle = getPhotoSubtitle(photo);
+
+  return (
+    <button
+      type="button"
+      className="photo-card"
+      onClick={() => onOpen(photo)}
+      aria-label={`Open ${title}`}
+    >
+      <div className="photo-card-media">
+        <img
+          className="photo-card-image"
+          src={photo.image_url}
+          alt={photo.caption || title}
+          loading="lazy"
+        />
+        <span className="photo-card-badge">{photo.photo_type_label}</span>
+      </div>
+      <div className="photo-card-body">
+        <strong className="photo-card-title">{title}</strong>
+        <span className="photo-card-subtitle">{subtitle}</span>
+        <div className="photo-card-meta">
+          <span>{photo.cemetery_name || 'No cemetery'}</span>
+          <span>{formatDateTimeShort(photo.created_at)}</span>
+        </div>
+        {photo.caption && <p className="photo-card-caption">{photo.caption}</p>}
+        <span className="photo-card-link">Open photo</span>
+      </div>
+    </button>
+  );
+}
+
+function PhotoLightbox({ photo, onClose }) {
+  if (!photo) return null;
+
+  const title = getPhotoTitle(photo);
+  const subtitle = getPhotoSubtitle(photo);
+
+  return (
+    <div className="panel-overlay photo-viewer-overlay" onClick={onClose}>
+      <div
+        className="panel-window photo-viewer-window"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
+        <div className="card-header photo-viewer-header">
+          <div>
+            <h3>{title}</h3>
+            <p className="meta">{subtitle}</p>
+          </div>
+          <button type="button" className="secondary-btn" onClick={onClose}>
+            Close
+          </button>
+        </div>
+
+        <div className="photo-viewer-body">
+          <div className="photo-viewer-media">
+            <img
+              className="photo-viewer-image"
+              src={photo.image_url}
+              alt={photo.caption || title}
+            />
+          </div>
+
+          <div className="photo-viewer-details">
+            <div className="detail-card photo-viewer-card">
+              <span className="detail-label">Linked Record</span>
+              <strong>{photo.customer_name || photo.memorial_name || 'Unknown customer'}</strong>
+              <p>{photo.cemetery_name || 'No cemetery listed'}</p>
+              <p>{photo.job_title || 'Service record'}</p>
+            </div>
+            <div className="detail-card photo-viewer-card">
+              <span className="detail-label">Captured</span>
+              <strong>{formatDateTimeShort(photo.created_at)}</strong>
+              <p>{photo.photo_type_label || 'Archive photo'}</p>
+              {photo.caption && <p>{photo.caption}</p>}
+            </div>
+            <div className="modal-actions photo-viewer-actions">
+              <a className="secondary-btn" href={photo.image_url} target="_blank" rel="noreferrer">
+                Open full size
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ScheduleDropDialog({
+  draft,
+  selectedService,
+  technicianId,
+  onTechnicianChange,
+  scheduledStart,
+  onScheduledStartChange,
+  estimatedMinutes,
+  onEstimatedMinutesChange,
+  technicians,
+  onSubmit,
+  onClose,
+  submitState,
+  completeState
+}) {
+  if (!draft || !selectedService) return null;
+
+  return (
+    <div className="panel-overlay" onClick={onClose}>
+      <div className="panel-window scheduling-drop-window" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true">
+        <div className="card-header">
+          <div>
+            <h3>Schedule Job</h3>
+            <p className="meta">Pick the time and technician for the dropped job.</p>
+          </div>
+          <button type="button" className="secondary-btn" onClick={onClose}>
+            Cancel
+          </button>
+        </div>
+
+        <div className="job-detail-summary">
+          <strong>{selectedService.memorial_name || `Service #${selectedService.id}`}</strong>
+          <span>{selectedService.cemetery_name || 'No cemetery listed'}</span>
+          <div className="meta">
+            {getServiceTypeLabel(selectedService)} · Drop date: {formatDateOnly(draft.date)}
+          </div>
+        </div>
+
+        <form className="form" onSubmit={onSubmit}>
+          <label>Start Time</label>
+          <input
+            type="datetime-local"
+            value={scheduledStart}
+            onChange={(event) => onScheduledStartChange(event.target.value)}
+            autoFocus
+            required
+          />
+
+          <label>Technician</label>
+          <select
+            value={technicianId}
+            onChange={(event) => onTechnicianChange(event.target.value)}
+            required
+          >
+            <option value="">Select technician</option>
+            {technicians.map((tech) => (
+              <option key={tech.id} value={tech.id}>{tech.full_name}</option>
+            ))}
+          </select>
+
+          <label>Estimated Minutes</label>
+          <input
+            type="number"
+            min="1"
+            max="1440"
+            value={estimatedMinutes}
+            onChange={(event) => onEstimatedMinutesChange(event.target.value)}
+            required
+          />
+
+          {submitState.error && <div className="form-error">{submitState.error}</div>}
+          {completeState.error && <div className="form-error">{completeState.error}</div>}
+
+          <div className="modal-actions">
+            <button type="button" className="ghost-btn" onClick={onClose}>
+              Cancel
+            </button>
+            <button className="primary-btn" type="submit" disabled={submitState.loading}>
+              {submitState.loading ? 'Saving...' : 'Schedule Job'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
 
 function getCookie(name) {
   const cookies = document.cookie ? document.cookie.split(';') : [];
@@ -187,6 +391,24 @@ function toDatetimeLocalInput(value) {
   return local.toISOString().slice(0, 16);
 }
 
+function toTimeInputValue(value) {
+  if (!value) return '09:00';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return '09:00';
+  return dt.toLocaleTimeString('en-US', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+function buildLocalDateTimeValue(dateValue, timeValue = '09:00') {
+  const date = String(dateValue || '').trim();
+  if (!date) return '';
+  const time = /^\d{2}:\d{2}$/.test(String(timeValue || '').trim()) ? String(timeValue).trim() : '09:00';
+  return `${date}T${time}`;
+}
+
 function datetimeLocalToIso(value) {
   if (!value) return '';
   const dt = new Date(value);
@@ -236,11 +458,34 @@ function buildScheduleEvent(service) {
   };
 }
 
-function SchedulingCalendar({ services, calendarDate, onDateChange, onSelectService, selectedServiceId }) {
+function SchedulingCalendar({ services, calendarDate, onDateChange, onSelectService, onDropDate, selectedServiceId, draggedServiceIdRef }) {
   const containerRef = React.useRef(null);
+  const handlersRef = React.useRef({
+    onDateChange,
+    onSelectService,
+    onDropDate,
+    selectedServiceId,
+    draggedServiceIdRef
+  });
+
+  useEffect(() => {
+    handlersRef.current = {
+      onDateChange,
+      onSelectService,
+      onDropDate,
+      selectedServiceId,
+      draggedServiceIdRef
+    };
+  }, [onDateChange, onSelectService, onDropDate, selectedServiceId, draggedServiceIdRef]);
 
   useEffect(() => {
     if (!FULLCALENDAR || !containerRef.current) return undefined;
+
+    const clearDropTargets = () => {
+      containerRef.current?.querySelectorAll('.calendar-drop-target').forEach((element) => {
+        element.classList.remove('calendar-drop-target');
+      });
+    };
 
     const calendar = new FULLCALENDAR.Calendar(containerRef.current, {
       initialView: 'dayGridMonth',
@@ -260,15 +505,66 @@ function SchedulingCalendar({ services, calendarDate, onDateChange, onSelectServ
         meridiem: 'short'
       },
       dateClick(info) {
-        onDateChange(info.dateStr);
+        handlersRef.current.onDateChange(info.dateStr);
       },
       eventClick(info) {
-        onDateChange(toDateInputValue(info.event.start || calendarDate));
-        onSelectService(info.event.id);
+        handlersRef.current.onDateChange(toDateInputValue(info.event.start || calendarDate));
+        handlersRef.current.onSelectService(info.event.id);
+      },
+      dayCellDidMount(arg) {
+        const cell = arg.el;
+        const getDraggedServiceId = () => {
+          const refId = handlersRef.current.draggedServiceIdRef?.current;
+          if (refId) return String(refId);
+          return '';
+        };
+
+        const handleDragOver = (event) => {
+          const serviceId = getDraggedServiceId() || event.dataTransfer?.getData('text/plain');
+          if (!serviceId) return;
+          event.preventDefault();
+          if (event.dataTransfer) {
+            event.dataTransfer.dropEffect = 'move';
+          }
+          cell.classList.add('calendar-drop-target');
+        };
+
+        const handleDragLeave = () => {
+          cell.classList.remove('calendar-drop-target');
+        };
+
+        const handleDrop = (event) => {
+          const serviceId = getDraggedServiceId() || event.dataTransfer?.getData('text/plain');
+          if (!serviceId) return;
+          event.preventDefault();
+          event.stopPropagation();
+          cell.classList.remove('calendar-drop-target');
+          handlersRef.current.onDropDate?.(toDateInputValue(arg.date), String(serviceId));
+        };
+
+        cell.classList.add('calendar-drop-zone');
+        cell.addEventListener('dragover', handleDragOver);
+        cell.addEventListener('dragenter', handleDragOver);
+        cell.addEventListener('dragleave', handleDragLeave);
+        cell.addEventListener('drop', handleDrop);
+        cell._hsDropCleanup = () => {
+          cell.removeEventListener('dragover', handleDragOver);
+          cell.removeEventListener('dragenter', handleDragOver);
+          cell.removeEventListener('dragleave', handleDragLeave);
+          cell.removeEventListener('drop', handleDrop);
+          cell.classList.remove('calendar-drop-zone');
+          cell.classList.remove('calendar-drop-target');
+        };
+      },
+      dayCellWillUnmount(arg) {
+        if (typeof arg.el._hsDropCleanup === 'function') {
+          arg.el._hsDropCleanup();
+        }
+        delete arg.el._hsDropCleanup;
       },
       eventContent(arg) {
         const technicianName = arg.event.extendedProps.technicianName;
-        const isSelected = String(selectedServiceId) === String(arg.event.id);
+        const isSelected = String(handlersRef.current.selectedServiceId) === String(arg.event.id);
 
         const wrapper = document.createElement('div');
         wrapper.className = `fc-event-card${isSelected ? ' is-selected' : ''}`;
@@ -288,8 +584,13 @@ function SchedulingCalendar({ services, calendarDate, onDateChange, onSelectServ
     });
 
     calendar.render();
-    return () => calendar.destroy();
-  }, [services, calendarDate, onDateChange, onSelectService, selectedServiceId]);
+    document.addEventListener('dragend', clearDropTargets, true);
+    return () => {
+      document.removeEventListener('dragend', clearDropTargets, true);
+      clearDropTargets();
+      calendar.destroy();
+    };
+  }, [services, calendarDate, selectedServiceId]);
 
   if (!FULLCALENDAR) {
     return <p className="meta">Calendar library failed to load.</p>;
@@ -1006,7 +1307,6 @@ function DashboardPage() {
             <h3>Upcoming Services</h3>
             <button className="ghost-btn" type="button" onClick={handleViewCalendar}>View Calendar</button>
           </div>
-
           {loading && <p className="meta">Loading from backend...</p>}
           {!loading && upcomingServices.length === 0 && <p className="meta">No upcoming services scheduled.</p>}
           {!loading && upcomingServices.length > 0 && (
@@ -1021,6 +1321,7 @@ function DashboardPage() {
             </ul>
           )}
         </div>
+        )}
 
         <div className="card">
           <h3>Monthly Revenue</h3>
@@ -1054,7 +1355,6 @@ function DashboardPage() {
           </tbody>
           </table>
         </div>
-
         <div className="card">
           <h3>Photo Archive Status</h3>
           <p className="meta">No photo metrics yet. Connect a photos endpoint to show status.</p>
@@ -1184,6 +1484,9 @@ function PublicSurveyPage({ surveyToken }) {
   return (
     <div className="public-page-shell">
       <div className="public-page-card">
+        <div className="public-page-brand">
+          <BrandMark variant="header" className="public-page-brand-image" />
+        </div>
         <div className="public-page-header">
           <span className="tag">Headstone Restoration</span>
           <h1 className="page-title">Customer Survey</h1>
@@ -1450,6 +1753,7 @@ function MemorialsPage() {
             </button>
           </form>
         </div>
+        )}
 
         <div className="card">
           <table>
@@ -1520,6 +1824,8 @@ function SchedulingPage() {
   const [createState, setCreateState] = useState({ loading: false, error: '', success: '' });
   const [surveyState, setSurveyState] = useState({ loading: false, error: '', data: null });
   const [surveyActionState, setSurveyActionState] = useState({ loading: false, error: '', success: '' });
+  const draggedServiceIdRef = useRef('');
+  const [dropScheduleDraft, setDropScheduleDraft] = useState(null);
 
   useEffect(() => {
     setServices(Array.isArray(servicesState.data) ? servicesState.data : []);
@@ -1558,6 +1864,37 @@ function SchedulingPage() {
       setSubmitState({ loading: false, error: '', success: '' });
       setCompleteState({ loading: false, error: '', success: '' });
     }
+  }
+
+  function openDropAssignment(serviceId, dateStr) {
+    const svc = services.find((item) => String(item.id) === String(serviceId));
+    if (!svc || !dateStr) return;
+    syncFormFromService(serviceId, { resetState: false });
+    setCalendarDate(dateStr);
+    setScheduledStart(buildLocalDateTimeValue(dateStr, toTimeInputValue(svc.scheduled_start)));
+    setEstimatedMinutes(svc.estimated_minutes ? String(svc.estimated_minutes) : '90');
+    setDropScheduleDraft({
+      serviceId: String(serviceId),
+      date: dateStr
+    });
+    setSubmitState({ loading: false, error: '', success: '' });
+    setCompleteState({ loading: false, error: '', success: '' });
+  }
+
+  function handleServiceDragStart(event, service) {
+    draggedServiceIdRef.current = String(service.id);
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', String(service.id));
+    }
+  }
+
+  function handleServiceDragEnd() {
+    draggedServiceIdRef.current = '';
+  }
+
+  function handleCalendarDrop(dateStr, serviceId) {
+    openDropAssignment(serviceId, dateStr);
   }
 
   function resetCreateForm() {
@@ -1621,6 +1958,7 @@ function SchedulingPage() {
         setCalendarDate(toDateInputValue(json.service.scheduled_start || new Date()));
       }
       window.dispatchEvent(new Event('hs:schedule-updated'));
+      setDropScheduleDraft(null);
       setSubmitState({ loading: false, error: '', success: 'Technician assigned.' });
     } catch (err) {
       setSubmitState({ loading: false, error: err.message || 'Failed to save schedule.', success: '' });
@@ -1738,6 +2076,7 @@ function SchedulingPage() {
       setTechnicianId('');
       setScheduledStart('');
       setEstimatedMinutes('90');
+      setDropScheduleDraft(null);
       window.dispatchEvent(new Event('hs:schedule-updated'));
       setCompleteState({
         loading: false,
@@ -1961,15 +2300,22 @@ function SchedulingPage() {
             calendarDate={calendarDate}
             onDateChange={setCalendarDate}
             onSelectService={syncFormFromService}
+            onDropDate={handleCalendarDrop}
             selectedServiceId={selectedServiceId}
+            draggedServiceIdRef={draggedServiceIdRef}
           />
           {scheduledForDay.length === 0 && <p className="meta">No jobs scheduled for this date.</p>}
           {scheduledForDay.length > 0 && (
-            <ul className="service-list scheduling-agenda">
+            <div className="scroll-window scroll-window-sm">
+              <ul className="service-list scheduling-agenda">
               {scheduledForDay.map((svc) => (
                 <li
                   key={svc.id}
-                  className={String(selectedServiceId) === String(svc.id) ? 'selected' : ''}
+                  draggable
+                  className={`scheduling-draggable${String(selectedServiceId) === String(svc.id) ? ' selected' : ''}`}
+                  title="Drag onto the calendar to reschedule"
+                  onDragStart={(event) => handleServiceDragStart(event, svc)}
+                  onDragEnd={handleServiceDragEnd}
                   onClick={() => syncFormFromService(svc.id)}
                 >
                   <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
@@ -1980,9 +2326,91 @@ function SchedulingPage() {
                   </div>
                 </li>
               ))}
-            </ul>
+              </ul>
+            </div>
           )}
+          <div className="card scheduling-assignment-card">
+            <div className="card-header">
+              <div>
+                <h3>Assign Technician</h3>
+                <p className="meta">Use this to assign or reassign a technician, update the start time, or change the duration.</p>
+              </div>
+            </div>
+            {selectedService && (
+              <div className="job-detail-summary">
+                <strong>{selectedService.memorial_name || `Service #${selectedService.id}`}</strong>
+                <span>{selectedService.cemetery_name || 'No cemetery listed'}</span>
+                <div className="meta">
+                  {getServiceTypeLabel(selectedService)} Â· Status: {selectedService.status || 'draft'} Â· Price: {selectedService.price != null ? formatCurrency(Number(selectedService.price)) : 'â€”'} Â· GPS: {selectedService.gps_lat != null && selectedService.gps_lng != null ? `${selectedService.gps_lat}, ${selectedService.gps_lng}` : 'â€”'}
+                </div>
+              </div>
+            )}
+            <form className="form" onSubmit={handleAssign}>
+              <label>Job</label>
+              <select
+                value={selectedServiceId}
+                onChange={(event) => syncFormFromService(event.target.value)}
+                required
+              >
+                <option value="">Select a job</option>
+                {schedulableServices.map((svc) => (
+                  <option key={svc.id} value={svc.id}>
+                    #{svc.id} Â· {getServiceTypeLabel(svc)} Â· {svc.memorial_name || 'Memorial'} Â· {svc.technician_name || 'Unassigned'}
+                  </option>
+                ))}
+              </select>
+
+              <label>Technician</label>
+              <select
+                value={technicianId}
+                onChange={(event) => setTechnicianId(event.target.value)}
+                required
+              >
+                <option value="">Select technician</option>
+                {(techState.data || []).map((tech) => (
+                  <option key={tech.id} value={tech.id}>{tech.full_name}</option>
+                ))}
+              </select>
+
+              <label>Start Time</label>
+              <input
+                type="datetime-local"
+                value={scheduledStart}
+                onChange={(event) => setScheduledStart(event.target.value)}
+                required
+              />
+
+              <label>Estimated Minutes</label>
+              <input
+                type="number"
+                min="1"
+                max="1440"
+                value={estimatedMinutes}
+                onChange={(event) => setEstimatedMinutes(event.target.value)}
+                required
+              />
+
+              {submitState.error && <div className="form-error">{submitState.error}</div>}
+              {submitState.success && <div className="card form-success"><strong>{submitState.success}</strong></div>}
+              {completeState.error && <div className="form-error">{completeState.error}</div>}
+              {completeState.success && <div className="card form-success"><strong>{completeState.success}</strong></div>}
+              <button className="primary-btn" type="submit" disabled={submitState.loading}>
+                {submitState.loading ? 'Saving...' : selectedService?.technician_id ? 'Save Assignment' : 'Assign Technician'}
+              </button>
+              {selectedService && selectedService.status !== 'completed' && (
+                <button
+                  className="ghost-btn"
+                  type="button"
+                  onClick={handleMarkComplete}
+                  disabled={completeState.loading}
+                >
+                  {completeState.loading ? 'Completing...' : 'Mark Complete'}
+                </button>
+              )}
+            </form>
+          </div>
         </div>
+        )}
 
         <div className="card">
           <div className="card-header">
@@ -1993,11 +2421,16 @@ function SchedulingPage() {
           </div>
           {unassignedServices.length === 0 && <p className="meta">No unassigned jobs right now.</p>}
           {unassignedServices.length > 0 && (
-            <ul className="service-list scheduling-agenda">
+            <div className="scroll-window scroll-window-lg">
+              <ul className="service-list scheduling-agenda">
               {unassignedServices.map((svc) => (
                 <li
                   key={svc.id}
-                  className={String(selectedServiceId) === String(svc.id) ? 'selected' : ''}
+                  draggable
+                  className={`scheduling-draggable${String(selectedServiceId) === String(svc.id) ? ' selected' : ''}`}
+                  title="Drag onto the calendar to schedule"
+                  onDragStart={(event) => handleServiceDragStart(event, svc)}
+                  onDragEnd={handleServiceDragEnd}
                   onClick={() => syncFormFromService(svc.id)}
                 >
                   <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
@@ -2007,126 +2440,27 @@ function SchedulingPage() {
                   </div>
                 </li>
               ))}
-            </ul>
+              </ul>
+            </div>
           )}
         </div>
       </section>
 
-      <section className="grid-2">
-        <div className="card">
-          <div className="card-header">
-            <div>
-              <h3>Assign Technician</h3>
-              <p className="meta">Use this to assign or reassign a technician, update the start time, or change the duration.</p>
-            </div>
-          </div>
-          {selectedService && (
-            <div className="job-detail-summary">
-              <strong>{selectedService.memorial_name || `Service #${selectedService.id}`}</strong>
-              <span>{selectedService.cemetery_name || 'No cemetery listed'}</span>
-              <div className="meta">
-                {getServiceTypeLabel(selectedService)} · Status: {selectedService.status || 'draft'} · Price: {selectedService.price != null ? formatCurrency(Number(selectedService.price)) : '—'} · GPS: {selectedService.gps_lat != null && selectedService.gps_lng != null ? `${selectedService.gps_lat}, ${selectedService.gps_lng}` : '—'}
-              </div>
-            </div>
-          )}
-          <form className="form" onSubmit={handleAssign}>
-            <label>Job</label>
-            <select
-              value={selectedServiceId}
-              onChange={(event) => syncFormFromService(event.target.value)}
-              required
-            >
-              <option value="">Select a job</option>
-              {schedulableServices.map((svc) => (
-                <option key={svc.id} value={svc.id}>
-                  #{svc.id} · {getServiceTypeLabel(svc)} · {svc.memorial_name || 'Memorial'} · {svc.technician_name || 'Unassigned'}
-                </option>
-              ))}
-            </select>
-
-            <label>Technician</label>
-            <select
-              value={technicianId}
-              onChange={(event) => setTechnicianId(event.target.value)}
-              required
-            >
-              <option value="">Select technician</option>
-              {(techState.data || []).map((tech) => (
-                <option key={tech.id} value={tech.id}>{tech.full_name}</option>
-              ))}
-            </select>
-
-            <label>Start Time</label>
-            <input
-              type="datetime-local"
-              value={scheduledStart}
-              onChange={(event) => setScheduledStart(event.target.value)}
-              required
-            />
-
-            <label>Estimated Minutes</label>
-            <input
-              type="number"
-              min="1"
-              max="1440"
-              value={estimatedMinutes}
-              onChange={(event) => setEstimatedMinutes(event.target.value)}
-              required
-            />
-
-            {submitState.error && <div className="form-error">{submitState.error}</div>}
-            {submitState.success && <div className="card form-success"><strong>{submitState.success}</strong></div>}
-            {completeState.error && <div className="form-error">{completeState.error}</div>}
-            {completeState.success && <div className="card form-success"><strong>{completeState.success}</strong></div>}
-            <button className="primary-btn" type="submit" disabled={submitState.loading}>
-              {submitState.loading ? 'Saving...' : selectedService?.technician_id ? 'Save Assignment' : 'Assign Technician'}
-            </button>
-            {selectedService && selectedService.status !== 'completed' && (
-              <button
-                className="ghost-btn"
-                type="button"
-                onClick={handleMarkComplete}
-                disabled={completeState.loading}
-              >
-                {completeState.loading ? 'Completing...' : 'Mark Complete'}
-              </button>
-            )}
-          </form>
-        </div>
-
-        <div className="card">
-          <div className="card-header">
-            <div>
-              <h3>Assigned Jobs</h3>
-              <p className="meta">Scheduled jobs with technicians already attached.</p>
-            </div>
-          </div>
-          {assignedServices.length === 0 && <p className="meta">No assigned jobs yet.</p>}
-          {assignedServices.length > 0 && (
-            <ul className="service-list scheduling-agenda">
-              {assignedServices
-                .sort((a, b) => {
-                  const aTime = a.scheduled_start ? new Date(a.scheduled_start).getTime() : Number.MAX_SAFE_INTEGER;
-                  const bTime = b.scheduled_start ? new Date(b.scheduled_start).getTime() : Number.MAX_SAFE_INTEGER;
-                  return aTime - bTime;
-                })
-                .map((svc) => (
-                  <li
-                    key={svc.id}
-                    className={String(selectedServiceId) === String(svc.id) ? 'selected' : ''}
-                    onClick={() => syncFormFromService(svc.id)}
-                  >
-                    <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
-                    <span>{svc.technician_name || 'No technician'}</span>
-                    <div className="meta">
-                      {getServiceTypeLabel(svc)} · {formatDateTimeShort(svc.scheduled_start)} · {svc.estimated_minutes || 0} min
-                    </div>
-                  </li>
-                ))}
-            </ul>
-          )}
-        </div>
-      </section>
+      <ScheduleDropDialog
+        draft={dropScheduleDraft}
+        selectedService={selectedService}
+        technicianId={technicianId}
+        onTechnicianChange={setTechnicianId}
+        scheduledStart={scheduledStart}
+        onScheduledStartChange={setScheduledStart}
+        estimatedMinutes={estimatedMinutes}
+        onEstimatedMinutesChange={setEstimatedMinutes}
+        technicians={Array.isArray(techState.data) ? techState.data : []}
+        onSubmit={handleAssign}
+        onClose={() => setDropScheduleDraft(null)}
+        submitState={submitState}
+        completeState={completeState}
+      />
 
       <section className="grid-2">
         <div className="card">
@@ -3079,6 +3413,15 @@ function ArchivePage({ sessionUser }) {
   const photosState = useApi('/photos/', [], true, { refreshEvent: 'hs:photos-updated' });
   const photos = Array.isArray(photosState.data) ? photosState.data : [];
   const isAdmin = sessionUser?.frontend_role === 'admin';
+  const [selectedPhoto, setSelectedPhoto] = useState(null);
+
+  useEffect(() => {
+    if (!selectedPhoto) return;
+    const stillVisible = photos.some((photo) => String(photo.id) === String(selectedPhoto.id));
+    if (!stillVisible) {
+      setSelectedPhoto(null);
+    }
+  }, [photos, selectedPhoto]);
 
   return (
     <>
@@ -3086,35 +3429,29 @@ function ArchivePage({ sessionUser }) {
       <p className="page-subtitle">Permanent visual records by memorial.</p>
       {photosState.error && <div className="card warn">Backend error: {photosState.error}</div>}
       <div className="card">
+        <div className="card-header">
+          <div>
+            <h3>Archive Library</h3>
+            <span className="meta">
+              {photos.length}
+              {photos.length === 1 ? ' photo' : ' photos'}
+            </span>
+          </div>
+          <span className="meta">
+            {isAdmin ? 'All customer archives' : sessionUser?.frontend_role === 'employee' ? 'Your uploaded photos' : 'Linked customer photos'}
+          </span>
+        </div>
         {photosState.loading && <p className="meta">Loading photos...</p>}
         {!photosState.loading && photos.length === 0 && <p className="meta">No photos uploaded yet.</p>}
         {!photosState.loading && photos.length > 0 && (
           <div className="photo-grid">
             {photos.map((photo) => (
-              <article key={photo.id} className="photo-card">
-                <div className="photo-card-media">
-                  <img className="photo-card-image" src={photo.image_url} alt={photo.caption || photo.job_title || 'Archive photo'} />
-                  <span className="photo-card-badge">{photo.photo_type_label}</span>
-                </div>
-                <div className="photo-card-body">
-                  <strong className="photo-card-title">
-                    {isAdmin
-                      ? (photo.memorial_name || `Service #${photo.service_id || photo.id}`)
-                      : (photo.job_title || `Service #${photo.service_id || photo.id}`)}
-                  </strong>
-                  <span className="photo-card-subtitle">
-                    {isAdmin
-                      ? (photo.job_title || `Service #${photo.service_id || photo.id}`)
-                      : (photo.memorial_name || 'No memorial')}
-                  </span>
-                  <div className="photo-card-meta">{photo.cemetery_name || 'No cemetery'}</div>
-                  {photo.caption && <p className="photo-card-caption">{photo.caption}</p>}
-                </div>
-              </article>
+              <PhotoCard key={photo.id} photo={photo} onOpen={setSelectedPhoto} />
             ))}
           </div>
         )}
       </div>
+      <PhotoLightbox photo={selectedPhoto} onClose={() => setSelectedPhoto(null)} />
     </>
   );
 }
@@ -3373,6 +3710,9 @@ function EmailsPage() {
 
   return (
     <>
+      <div className="page-brand-banner">
+        <BrandMark variant="header" className="page-brand-banner-image" />
+      </div>
       <h1 className="page-title">Email Center</h1>
       <p className="page-subtitle">Send real outbound emails to customers or ad hoc recipients from one internal workflow.</p>
 
@@ -3616,6 +3956,9 @@ function AdminInvoicesPage() {
 
   return (
     <>
+      <div className="page-brand-banner">
+        <BrandMark variant="header" className="page-brand-banner-image" />
+      </div>
       <h1 className="page-title">Invoices</h1>
       <p className="page-subtitle">Review invoices, personalize the message, and email Stripe payment links to clients.</p>
 
@@ -5525,14 +5868,16 @@ function MemorialsPageModern() {
   );
 }
 
-function CustomersPageModern() {
+function CustomersPageModern({ sessionUser }) {
   const customerState = useApi('/manage/customers/', [], true, { refreshEvent: 'hs:customers-updated' });
   const memorialState = useApi('/memorials/', []);
+  const photosState = useApi('/photos/', [], true, { refreshEvent: 'hs:photos-updated' });
   const workflowStore = useWorkflowStore();
   const memorials = useMemo(
     () => buildMergedMemorials(memorialState.data || [], workflowStore),
     [memorialState.data, workflowStore]
   );
+  const photos = Array.isArray(photosState.data) ? photosState.data : [];
   const customers = useMemo(
     () => buildMergedCustomers(customerState.data || [], memorials, workflowStore),
     [customerState.data, memorials, workflowStore]
@@ -5542,6 +5887,7 @@ function CustomersPageModern() {
   const [form, setForm] = useState(createCustomerFormState());
   const [searchTerm, setSearchTerm] = useState('');
   const [saveState, setSaveState] = useState({ loading: false, error: '', success: '' });
+  const [selectedPhoto, setSelectedPhoto] = useState(null);
   const normalizedSearchTerm = searchTerm.trim().toLowerCase();
 
   useEffect(() => {
@@ -5604,6 +5950,15 @@ function CustomersPageModern() {
     () => memorials.filter((memorial) => selectedCustomer && matchesCustomerRecord(memorial, selectedCustomer)),
     [memorials, selectedCustomer]
   );
+
+  const selectedCustomerPhotos = useMemo(
+    () => photos.filter((photo) => selectedCustomer && String(photo.customer_id) === String(selectedCustomer.id)),
+    [photos, selectedCustomer]
+  );
+
+  useEffect(() => {
+    setSelectedPhoto(null);
+  }, [selectedCustomerId]);
 
   async function handleSave(event) {
     event.preventDefault();
@@ -5673,8 +6028,8 @@ function CustomersPageModern() {
         </button>
       </div>
 
-      {(customerState.error || memorialState.error) && (
-        <div className="card warn">Backend error: {customerState.error || memorialState.error}</div>
+      {(customerState.error || memorialState.error || photosState.error) && (
+        <div className="card warn">Backend error: {customerState.error || memorialState.error || photosState.error}</div>
       )}
 
       <section className="grid-2">
@@ -5796,6 +6151,15 @@ function CustomersPageModern() {
                 <strong>{selectedCustomer.how_heard_about_us || 'Not captured'}</strong>
                 <p>{selectedCustomer.last_contact ? `Last contact ${formatDateOnly(selectedCustomer.last_contact)}` : 'No last contact logged'}</p>
               </div>
+              <div className="detail-card">
+                <span className="detail-label">Photos</span>
+                <strong>{selectedCustomerPhotos.length}</strong>
+                <p>
+                  {selectedCustomerPhotos.length
+                    ? 'Linked uploads appear below in the customer gallery.'
+                    : 'No photos are linked to this customer yet.'}
+                </p>
+              </div>
             </div>
           )}
         </div>
@@ -5826,6 +6190,37 @@ function CustomersPageModern() {
           )}
         </div>
       </section>
+
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3>Customer Photos</h3>
+            <span className="meta">
+              {selectedCustomerPhotos.length}
+              {selectedCustomerPhotos.length === 1 ? ' linked photo' : ' linked photos'}
+            </span>
+          </div>
+          <span className="meta">
+            {selectedCustomer
+              ? (sessionUser?.frontend_role === 'customer' ? 'Your uploads appear below.' : 'Click a photo to preview it.')
+              : 'Select a customer to view their uploads.'}
+          </span>
+        </div>
+        {!selectedCustomer && <p className="meta">Select a customer first.</p>}
+        {selectedCustomer && photosState.loading && <p className="meta">Loading customer photos...</p>}
+        {selectedCustomer && !photosState.loading && selectedCustomerPhotos.length === 0 && (
+          <p className="meta">No photos have been uploaded for this customer yet.</p>
+        )}
+        {selectedCustomer && selectedCustomerPhotos.length > 0 && (
+          <div className="photo-grid">
+            {selectedCustomerPhotos.map((photo) => (
+              <PhotoCard key={photo.id} photo={photo} onOpen={setSelectedPhoto} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <PhotoLightbox photo={selectedPhoto} onClose={() => setSelectedPhoto(null)} />
     </>
   );
 }
@@ -6235,7 +6630,9 @@ ROUTES.frontdesk.onboarding = OnboardingPageModern;
 function LoginPage({ form, authState, onChange, onSubmit }) {
   return (
     <div className="main main-login">
-      <header className="topbar topbar-login"></header>
+      <header className="topbar topbar-login">
+        <BrandMark variant="header" className="topbar-login-brand" />
+      </header>
       <main className="content">
         <h1 className="page-title">Login</h1>
         <p className="page-subtitle">Sign in with your email or username and password.</p>
@@ -6346,7 +6743,9 @@ function SetupPasswordPage({ onComplete }) {
 
   return (
     <div className="main main-login">
-      <header className="topbar topbar-login"></header>
+      <header className="topbar topbar-login">
+        <BrandMark variant="header" className="topbar-login-brand" />
+      </header>
       <main className="content">
         <h1 className="page-title">Set Password</h1>
         <p className="page-subtitle">Finish setting up your employee account.</p>
@@ -6418,7 +6817,7 @@ function Layout({ role, sessionUser, navItems, currentPath, onLogout, children }
     <>
       <aside className="sidebar">
         <div className="logo">
-          <div className="logo-icon"></div>
+          <BrandMark variant="icon" className="logo-icon" decorative />
           <div className="logo-text">
             <strong>Headstone</strong>
             <span>Restoration</span>

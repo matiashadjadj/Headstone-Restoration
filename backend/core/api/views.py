@@ -2,7 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework import serializers
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.authentication import BasicAuthentication, SessionAuthentication
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from datetime import timedelta
@@ -20,6 +20,8 @@ from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.storage import default_storage
+from html import escape
+import re
 from urllib.parse import urlparse
 
 from communications.exceptions import EmailDeliveryError
@@ -81,6 +83,10 @@ DEFAULT_INVOICE_BODY = (
     "Best regards,\n"
     "Headstone Restoration"
 )
+
+EMAIL_BRAND_LOGO_HEADER_PATH = "/static/logo-header.png"
+EMAIL_BRAND_LOGO_ICON_PATH = "/static/logo-icon.png"
+EMAIL_BRAND_URL_RE = re.compile(r"https?://[^\s<]+")
 
 
 def resolve_session_user(user, request=None):
@@ -173,6 +179,58 @@ def build_invoice_template_replacements(*, invoice: Invoice, checkout_url: str) 
     }
 
 
+def build_branded_email_html(*, request, text_body: str, cta_url: str = "", cta_label: str = "Open link") -> str:
+    header_logo_url = request.build_absolute_uri(EMAIL_BRAND_LOGO_HEADER_PATH)
+    icon_url = request.build_absolute_uri(EMAIL_BRAND_LOGO_ICON_PATH)
+
+    safe_body = escape(text_body or "")
+    safe_body = EMAIL_BRAND_URL_RE.sub(
+        lambda match: f'<a href="{match.group(0)}" style="color:#2563eb;text-decoration:none;word-break:break-word;">{match.group(0)}</a>',
+        safe_body,
+    )
+    safe_body = safe_body.replace("\n", "<br>")
+
+    cta_html = ""
+    if cta_url:
+        safe_cta_url = escape(cta_url, quote=True)
+        safe_cta_label = escape(cta_label or "Open link")
+        cta_html = (
+            '<div style="margin-top:24px;text-align:center;">'
+            f'<a href="{safe_cta_url}" '
+            'style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;'
+            'padding:12px 20px;border-radius:999px;font-weight:700;letter-spacing:0.01em;">'
+            f"{safe_cta_label}"
+            "</a>"
+            "</div>"
+        )
+
+    return f"""<!doctype html>
+<html>
+  <body style="margin:0;padding:24px;background:#f5f7fb;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
+    <div style="max-width:720px;margin:0 auto;background:#ffffff;border:1px solid #dbeafe;border-radius:24px;overflow:hidden;box-shadow:0 24px 60px rgba(15,23,42,0.12);">
+      <div style="background:#0f172a;padding:28px 32px;text-align:center;">
+        <img src="{header_logo_url}" alt="Headstone Restoration" style="display:block;width:100%;max-width:340px;height:auto;margin:0 auto;" />
+      </div>
+      <div style="padding:30px 32px 34px;font-size:16px;line-height:1.7;">
+        <div style="white-space:normal;">{safe_body}</div>
+        {cta_html}
+        <table role="presentation" style="margin-top:28px;width:100%;border-collapse:collapse;background:#0f172a;border-radius:18px;">
+          <tr>
+            <td style="padding:14px 16px;width:48px;vertical-align:middle;">
+              <img src="{icon_url}" alt="" style="display:block;width:40px;height:40px;object-fit:contain;" />
+            </td>
+            <td style="padding:14px 16px;vertical-align:middle;font-size:13px;line-height:1.5;color:#cbd5e1;">
+              <div style="font-size:14px;font-weight:700;color:#ffffff;">Headstone Restoration</div>
+              <div>Memorial care and restoration</div>
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </body>
+</html>"""
+
+
 def get_employee_invite_or_404(token: str) -> EmployeeInvite:
     invite = get_object_or_404(
         EmployeeInvite.objects.select_related("employee", "user"),
@@ -238,6 +296,19 @@ def send_customer_survey_email(request, survey_request: CustomerSurveyRequest) -
             f"Please complete this survey so we can confirm the memorial location and details:\n\n"
             f"{survey_url}\n\n"
             f"This link expires in {getattr(settings, 'CUSTOMER_SURVEY_EXPIRY_DAYS', 14)} days."
+        ),
+        html_body=build_branded_email_html(
+            request=request,
+            text_body=(
+                f"Hello {greeting_name},\n\n"
+                f"We created your {service_name} job"
+                f"{f' for {cemetery_name}' if cemetery_name else ''}.\n"
+                f"Please complete this survey so we can confirm the memorial location and details:\n\n"
+                f"{survey_url}\n\n"
+                f"This link expires in {getattr(settings, 'CUSTOMER_SURVEY_EXPIRY_DAYS', 14)} days."
+            ),
+            cta_url=survey_url,
+            cta_label="Open survey"
         ),
         recipient_list=[customer.email],
         purpose="panel",
@@ -377,6 +448,18 @@ def send_employee_invite_email(request, invite: EmployeeInvite) -> str:
             f"Use this link to set your password and activate your account:\n\n"
             f"{invite_url}\n\n"
             f"This setup link expires in {getattr(settings, 'INVITE_EXPIRY_HOURS', 72)} hours."
+        ),
+        html_body=build_branded_email_html(
+            request=request,
+            text_body=(
+                f"Hello {invite.employee.full_name},\n\n"
+                f"You have been invited to Headstone Restoration as a {invite.employee.get_role_display()}.\n"
+                f"Use this link to set your password and activate your account:\n\n"
+                f"{invite_url}\n\n"
+                f"This setup link expires in {getattr(settings, 'INVITE_EXPIRY_HOURS', 72)} hours."
+            ),
+            cta_url=invite_url,
+            cta_label="Set password"
         ),
         recipient_list=[invite.invited_email],
         purpose="invite",
@@ -1119,14 +1202,22 @@ class ServicePhotoUploadView(APIView):
 
 
 class PhotoArchiveListView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     authentication_classes = [SessionAuthentication, BasicAuthentication]
 
     def get(self, request):
         employee = getattr(request.user, "employee", None) if getattr(request.user, "is_authenticated", False) else None
         photos = Photo.objects.select_related("memorial__customer", "memorial__plot__cemetery", "service")
-        if employee and employee.role not in {Employee.Role.ADMIN, Employee.Role.FRONT_DESK}:
+        if request.user.is_superuser:
+            pass
+        elif employee and employee.role not in {Employee.Role.ADMIN, Employee.Role.FRONT_DESK}:
             photos = photos.filter(uploaded_by=employee)
+        elif not employee:
+            customer = Customer.objects.filter(email__iexact=(request.user.email or "").strip()).first()
+            if customer:
+                photos = photos.filter(memorial__customer=customer)
+            else:
+                return Response([], status=status.HTTP_200_OK)
         photos = photos.order_by("-created_at")
         return Response(PhotoArchiveSerializer(photos, many=True).data)
 
@@ -1261,6 +1352,10 @@ class SendCustomerEmailView(APIView):
                 send_email(
                     subject=rendered_subject,
                     text_body=rendered_body,
+                    html_body=build_branded_email_html(
+                        request=request,
+                        text_body=rendered_body,
+                    ),
                     from_email=from_email,
                     recipient_list=[raw_email],
                     purpose="panel",
@@ -1517,6 +1612,12 @@ class AdminInvoiceSendView(APIView):
             send_email(
                 subject=rendered_subject,
                 text_body=rendered_body,
+                html_body=build_branded_email_html(
+                    request=request,
+                    text_body=rendered_body,
+                    cta_url=checkout_url,
+                    cta_label="Open payment link"
+                ),
                 from_email=from_email,
                 recipient_list=[invoice.customer.email],
                 purpose="panel",

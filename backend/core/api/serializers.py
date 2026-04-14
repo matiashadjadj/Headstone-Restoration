@@ -83,6 +83,9 @@ class PhotoUploadSerializer(serializers.Serializer):
 
 
 class PhotoArchiveSerializer(serializers.ModelSerializer):
+    customer_id = serializers.IntegerField(source="memorial.customer.id", read_only=True)
+    customer_name = serializers.CharField(source="memorial.customer.full_name", read_only=True)
+    memorial_id = serializers.IntegerField(source="memorial.id", read_only=True)
     memorial_name = serializers.CharField(source="memorial.customer.full_name", read_only=True)
     cemetery_name = serializers.CharField(source="memorial.plot.cemetery.name", read_only=True)
     service_id = serializers.IntegerField(read_only=True)
@@ -94,6 +97,9 @@ class PhotoArchiveSerializer(serializers.ModelSerializer):
         model = Photo
         fields = [
             "id",
+            "customer_id",
+            "customer_name",
+            "memorial_id",
             "memorial_name",
             "cemetery_name",
             "service_id",
