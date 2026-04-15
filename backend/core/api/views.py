@@ -84,7 +84,6 @@ DEFAULT_INVOICE_BODY = (
     "Headstone Restoration"
 )
 
-EMAIL_BRAND_LOGO_HEADER_PATH = "/static/logo-header.png"
 EMAIL_BRAND_LOGO_ICON_PATH = "/static/logo-icon.png"
 EMAIL_BRAND_URL_RE = re.compile(r"https?://[^\s<]+")
 
@@ -180,7 +179,6 @@ def build_invoice_template_replacements(*, invoice: Invoice, checkout_url: str) 
 
 
 def build_branded_email_html(*, request, text_body: str, cta_url: str = "", cta_label: str = "Open link") -> str:
-    header_logo_url = request.build_absolute_uri(EMAIL_BRAND_LOGO_HEADER_PATH)
     icon_url = request.build_absolute_uri(EMAIL_BRAND_LOGO_ICON_PATH)
 
     safe_body = escape(text_body or "")
@@ -204,27 +202,34 @@ def build_branded_email_html(*, request, text_body: str, cta_url: str = "", cta_
             "</div>"
         )
 
+    signature_html = (
+        '<table role="presentation" style="margin-top:32px;width:100%;border-collapse:collapse;">'
+        '<tr>'
+        '<td style="padding-top:20px;border-top:1px solid #e2e8f0;">'
+        '<table role="presentation" style="border-collapse:collapse;">'
+        '<tr>'
+        '<td style="width:48px;padding-right:12px;vertical-align:middle;">'
+        f'<img src="{icon_url}" alt="Headstone Restoration" style="display:block;width:40px;height:40px;object-fit:contain;border-radius:12px;" />'
+        '</td>'
+        '<td style="vertical-align:middle;font-size:13px;line-height:1.5;color:#475569;">'
+        '<div style="font-size:14px;font-weight:700;color:#0f172a;">Headstone Restoration</div>'
+        '<div>Memorial care and restoration</div>'
+        '</td>'
+        '</tr>'
+        '</table>'
+        '</td>'
+        '</tr>'
+        '</table>'
+    )
+
     return f"""<!doctype html>
 <html>
   <body style="margin:0;padding:24px;background:#f5f7fb;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
     <div style="max-width:720px;margin:0 auto;background:#ffffff;border:1px solid #dbeafe;border-radius:24px;overflow:hidden;box-shadow:0 24px 60px rgba(15,23,42,0.12);">
-      <div style="background:#0f172a;padding:28px 32px;text-align:center;">
-        <img src="{header_logo_url}" alt="Headstone Restoration" style="display:block;width:100%;max-width:340px;height:auto;margin:0 auto;" />
-      </div>
       <div style="padding:30px 32px 34px;font-size:16px;line-height:1.7;">
         <div style="white-space:normal;">{safe_body}</div>
         {cta_html}
-        <table role="presentation" style="margin-top:28px;width:100%;border-collapse:collapse;background:#0f172a;border-radius:18px;">
-          <tr>
-            <td style="padding:14px 16px;width:48px;vertical-align:middle;">
-              <img src="{icon_url}" alt="" style="display:block;width:40px;height:40px;object-fit:contain;" />
-            </td>
-            <td style="padding:14px 16px;vertical-align:middle;font-size:13px;line-height:1.5;color:#cbd5e1;">
-              <div style="font-size:14px;font-weight:700;color:#ffffff;">Headstone Restoration</div>
-              <div>Memorial care and restoration</div>
-            </td>
-          </tr>
-        </table>
+        {signature_html}
       </div>
     </div>
   </body>
