@@ -1323,18 +1323,19 @@ function DashboardPage() {
           {loading && <p className="meta">Loading from backend...</p>}
           {!loading && upcomingServices.length === 0 && <p className="meta">No upcoming services scheduled.</p>}
           {!loading && upcomingServices.length > 0 && (
-            <ul className="service-list">
-              {upcomingServices.map((svc) => (
-                <li key={svc.id}>
-                  <strong>{svc.title}</strong>
-                  <span>{svc.cemetery}</span>
-                  <div className="meta">{svc.meta}</div>
-                </li>
-              ))}
-            </ul>
+            <div className="scroll-window scroll-window-lg">
+              <ul className="service-list">
+                {upcomingServices.map((svc) => (
+                  <li key={svc.id}>
+                    <strong>{svc.title}</strong>
+                    <span>{svc.cemetery}</span>
+                    <div className="meta">{svc.meta}</div>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
-        )}
 
         <div className="card">
           <h3>Monthly Revenue</h3>
@@ -1345,6 +1346,8 @@ function DashboardPage() {
       <section className="grid-2">
         <div className="card">
           <h3>Recently Completed</h3>
+          <div className="scroll-window scroll-window-lg">
+            <div className="table-scroll">
           <table>
             <thead>
               <tr>
@@ -1367,6 +1370,8 @@ function DashboardPage() {
             ))}
           </tbody>
           </table>
+            </div>
+          </div>
         </div>
         <div className="card">
           <h3>Photo Archive Status</h3>
@@ -1766,9 +1771,10 @@ function MemorialsPage() {
             </button>
           </form>
         </div>
-        )}
 
         <div className="card">
+          <div className="scroll-window scroll-window-lg">
+            <div className="table-scroll">
           <table>
           <thead>
             <tr>
@@ -1799,6 +1805,8 @@ function MemorialsPage() {
             ))}
           </tbody>
           </table>
+            </div>
+          </div>
         </div>
       </section>
     </>
@@ -3591,15 +3599,17 @@ function FrontDeskDashboardPage() {
           {loading && <p className="meta">Loading upcoming services...</p>}
           {!loading && upcoming.length === 0 && <p className="meta">No upcoming services scheduled.</p>}
           {!loading && upcoming.length > 0 && (
-            <ul className="service-list">
-              {upcoming.slice(0, 5).map((service) => (
-                <li key={service.id}>
-                  <strong>{service.memorial_name || `Service #${service.id}`}</strong>
-                  <span>{service.cemetery_name || 'No cemetery'}</span>
-                  <div className="meta">{formatDateTimeShort(service.scheduled_start)} · {service.status_display || service.status}</div>
-                </li>
-              ))}
-            </ul>
+            <div className="scroll-window scroll-window-lg">
+              <ul className="service-list">
+                {upcoming.slice(0, 5).map((service) => (
+                  <li key={service.id}>
+                    <strong>{service.memorial_name || `Service #${service.id}`}</strong>
+                    <span>{service.cemetery_name || 'No cemetery'}</span>
+                    <div className="meta">{formatDateTimeShort(service.scheduled_start)} · {service.status_display || service.status}</div>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
 
@@ -4376,7 +4386,8 @@ function EmployeeDashboardPage() {
           {loading && <p className="meta">Loading assignments...</p>}
           {!loading && upcoming.length === 0 && <p className="meta">No jobs assigned yet.</p>}
           {!loading && upcoming.length > 0 && (
-            <ul className="service-list">
+            <div className="scroll-window scroll-window-lg">
+              <ul className="service-list">
               {upcoming.map((svc) => (
                 <li key={svc.id}>
                   <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
@@ -4384,7 +4395,8 @@ function EmployeeDashboardPage() {
                   <div className="meta">{formatDateTimeShort(svc.scheduled_start)} · {svc.status_display || svc.status}</div>
                 </li>
               ))}
-            </ul>
+              </ul>
+            </div>
           )}
         </div>
 
@@ -4393,7 +4405,8 @@ function EmployeeDashboardPage() {
           {loading && <p className="meta">Loading completed jobs...</p>}
           {!loading && recent.length === 0 && <p className="meta">No completed jobs yet.</p>}
           {!loading && recent.length > 0 && (
-            <ul className="service-list">
+            <div className="scroll-window scroll-window-lg">
+              <ul className="service-list">
               {recent.map((svc) => (
                 <li key={svc.id}>
                   <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
@@ -4401,7 +4414,8 @@ function EmployeeDashboardPage() {
                   <div className="meta">{formatDateOnly(svc.completed_date)} · {svc.amount != null ? formatCurrency(Number(svc.amount)) : 'No invoice yet'}</div>
                 </li>
               ))}
-            </ul>
+              </ul>
+            </div>
           )}
         </div>
       </section>
@@ -5672,7 +5686,8 @@ function FrontDeskDashboardPageModern() {
           {loading && <p className="meta">Loading upcoming services...</p>}
           {!loading && upcoming.length === 0 && <p className="meta">No upcoming services scheduled.</p>}
           {!loading && upcoming.length > 0 && (
-            <ul className="service-list">
+            <div className="scroll-window scroll-window-lg">
+              <ul className="service-list">
               {upcoming.map((service) => (
                 <li key={service.id}>
                   <strong>{service.memorial_name || `Service #${service.id}`}</strong>
@@ -5681,7 +5696,8 @@ function FrontDeskDashboardPageModern() {
                   <div className="meta">{service.status_display || service.status}</div>
                 </li>
               ))}
-            </ul>
+              </ul>
+            </div>
           )}
         </div>
 
