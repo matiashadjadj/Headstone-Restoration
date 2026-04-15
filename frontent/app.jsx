@@ -2423,7 +2423,6 @@ function SchedulingPage() {
             </form>
           </div>
         </div>
-        )}
 
         <div className="card scheduling-side-card">
           <div className="card-header">
@@ -2571,8 +2570,9 @@ function SchedulingPage() {
 
       <div className="card">
         <h3>All Jobs</h3>
-        <div className="table-scroll">
-          <table>
+        <div className="scroll-window scroll-window-lg">
+          <div className="table-scroll">
+              <table>
             <thead>
               <tr>
                 <th>ID</th>
@@ -2616,8 +2616,9 @@ function SchedulingPage() {
                   <td><span className="tag">{svc.survey_status || 'not_sent'}</span></td>
                 </tr>
               ))}
-            </tbody>
-          </table>
+              </tbody>
+              </table>
+            </div>
         </div>
       </div>
 
@@ -3746,37 +3747,39 @@ function EmailsPage() {
           <p className="meta">
             {selectedCustomerIds.length} selected / {customersWithEmail.length} with email addresses
           </p>
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Pick</th>
-                  <th>Customer</th>
-                  <th>Email</th>
-                </tr>
-              </thead>
-              <tbody>
-                {customerState.loading && (
-                  <tr><td colSpan="3" className="meta">Loading customers...</td></tr>
-                )}
-                {!customerState.loading && customersWithEmail.length === 0 && (
-                  <tr><td colSpan="3" className="meta">No customers with emails found.</td></tr>
-                )}
-                {!customerState.loading && customersWithEmail.map((customer) => (
-                  <tr key={customer.id}>
-                    <td>
-                      <input
-                        type="checkbox"
-                        checked={selectedCustomerIds.includes(customer.id)}
-                        onChange={() => toggleCustomer(customer.id)}
-                      />
-                    </td>
-                    <td>{customer.full_name}</td>
-                    <td>{customer.email}</td>
+          <div className="scroll-window scroll-window-lg">
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Pick</th>
+                    <th>Customer</th>
+                    <th>Email</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {customerState.loading && (
+                    <tr><td colSpan="3" className="meta">Loading customers...</td></tr>
+                  )}
+                  {!customerState.loading && customersWithEmail.length === 0 && (
+                    <tr><td colSpan="3" className="meta">No customers with emails found.</td></tr>
+                  )}
+                  {!customerState.loading && customersWithEmail.map((customer) => (
+                    <tr key={customer.id}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={selectedCustomerIds.includes(customer.id)}
+                          onChange={() => toggleCustomer(customer.id)}
+                        />
+                      </td>
+                      <td>{customer.full_name}</td>
+                      <td>{customer.email}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
 
@@ -3841,29 +3844,33 @@ function EmailsPage() {
             <div className="form-error">Some emails failed. Check backend logs/SMTP configuration.</div>
           )}
           {sendState.result.sent?.length > 0 && (
-            <div className="compact-stack" style={{ marginTop: '12px' }}>
-              {sendState.result.sent.map((row, index) => (
-                <div key={`${row.email}-${index}`} className="queue-row">
-                  <strong>OK</strong>
-                  <div>
-                    <div>{row.name || row.email}</div>
-                    <span>{row.email}</span>
+            <div className="scroll-window scroll-window-sm" style={{ marginTop: '12px' }}>
+              <div className="compact-stack">
+                {sendState.result.sent.map((row, index) => (
+                  <div key={`${row.email}-${index}`} className="queue-row">
+                    <strong>OK</strong>
+                    <div>
+                      <div>{row.name || row.email}</div>
+                      <span>{row.email}</span>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           )}
           {sendState.result.failed?.length > 0 && (
-            <div className="compact-stack" style={{ marginTop: '12px' }}>
-              {sendState.result.failed.map((row, index) => (
-                <div key={`${row.email}-${index}`} className="queue-row">
-                  <strong>!</strong>
-                  <div>
-                    <div>{row.name || row.email}</div>
-                    <span>{row.error}</span>
+            <div className="scroll-window scroll-window-sm" style={{ marginTop: '12px' }}>
+              <div className="compact-stack">
+                {sendState.result.failed.map((row, index) => (
+                  <div key={`${row.email}-${index}`} className="queue-row">
+                    <strong>!</strong>
+                    <div>
+                      <div>{row.name || row.email}</div>
+                      <span>{row.error}</span>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -4012,8 +4019,9 @@ function AdminInvoicesPage() {
           {invoiceState.loading && <p className="meta">Loading invoices...</p>}
           {!invoiceState.loading && invoices.length === 0 && <p className="meta">No invoices found.</p>}
           {!invoiceState.loading && invoices.length > 0 && (
-            <div className="invoice-list">
-              {invoices.map((invoice) => (
+            <div className="scroll-window scroll-window-lg">
+              <div className="invoice-list">
+                {invoices.map((invoice) => (
                 <button
                   key={invoice.id}
                   type="button"
@@ -4039,7 +4047,8 @@ function AdminInvoicesPage() {
                     <span className="meta">{invoice.items?.length || 0} item(s)</span>
                   </div>
                 </button>
-              ))}
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -4239,48 +4248,50 @@ function AdminServiceOptionsManager() {
         {serviceOptionsState.error && <div className="form-error">{serviceOptionsState.error}</div>}
         {rowState.error && <div className="form-error">{rowState.error}</div>}
         {rowState.success && <p className="meta">{rowState.success}</p>}
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Service</th>
-                <th>Order</th>
-                <th>Status</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {serviceOptionsState.loading && <tr><td colSpan="4" className="meta">Loading services...</td></tr>}
-              {!serviceOptionsState.loading && serviceOptionsState.data.length === 0 && (
-                <tr><td colSpan="4" className="meta">No service options yet.</td></tr>
-              )}
-              {!serviceOptionsState.loading && serviceOptionsState.data.map((option) => (
-                <tr key={option.id}>
-                  <td>{option.name}</td>
-                  <td>{option.sort_order}</td>
-                  <td>{option.is_active ? 'Active' : 'Inactive'}</td>
-                  <td style={{ display: 'flex', gap: '6px' }}>
-                    <button
-                      className="ghost-btn"
-                      onClick={() => handleToggle(option)}
-                      disabled={rowState.loadingId === option.id}
-                    >
-                      {option.is_active ? 'Disable' : 'Enable'}
-                    </button>
-                    {!option.legacy_key && (
+        <div className="scroll-window scroll-window-lg">
+          <div className="table-scroll">
+              <table>
+              <thead>
+                <tr>
+                  <th>Service</th>
+                  <th>Order</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {serviceOptionsState.loading && <tr><td colSpan="4" className="meta">Loading services...</td></tr>}
+                {!serviceOptionsState.loading && serviceOptionsState.data.length === 0 && (
+                  <tr><td colSpan="4" className="meta">No service options yet.</td></tr>
+                )}
+                {!serviceOptionsState.loading && serviceOptionsState.data.map((option) => (
+                  <tr key={option.id}>
+                    <td>{option.name}</td>
+                    <td>{option.sort_order}</td>
+                    <td>{option.is_active ? 'Active' : 'Inactive'}</td>
+                    <td style={{ display: 'flex', gap: '6px' }}>
                       <button
                         className="ghost-btn"
-                        onClick={() => handleDelete(option.id)}
+                        onClick={() => handleToggle(option)}
                         disabled={rowState.loadingId === option.id}
                       >
-                        Delete
+                        {option.is_active ? 'Disable' : 'Enable'}
                       </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                      {!option.legacy_key && (
+                        <button
+                          className="ghost-btn"
+                          onClick={() => handleDelete(option.id)}
+                          disabled={rowState.loadingId === option.id}
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </section>
@@ -5468,16 +5479,18 @@ function DashboardPageModern() {
           {loading && <p className="meta">Loading from backend...</p>}
           {!loading && upcoming.length === 0 && <p className="meta">No upcoming services scheduled.</p>}
           {!loading && upcoming.length > 0 && (
-            <ul className="service-list">
-              {upcoming.map((svc) => (
-                <li key={svc.id}>
-                  <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
-                  <span>{svc.cemetery_name || 'Scheduled location'}</span>
-                  <div className="meta">Service date: {formatDateTimeShort(svc.scheduled_start)}</div>
-                  <div className="meta">{svc.status_display || svc.status || 'Scheduled'}</div>
-                </li>
-              ))}
-            </ul>
+            <div className="scroll-window scroll-window-lg">
+              <ul className="service-list">
+                {upcoming.map((svc) => (
+                  <li key={svc.id}>
+                    <strong>{svc.memorial_name || `Service #${svc.id}`}</strong>
+                    <span>{svc.cemetery_name || 'Scheduled location'}</span>
+                    <div className="meta">Service date: {formatDateTimeShort(svc.scheduled_start)}</div>
+                    <div className="meta">{svc.status_display || svc.status || 'Scheduled'}</div>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
 
@@ -5493,28 +5506,32 @@ function DashboardPageModern() {
       <section className="grid-2">
         <div className="card">
           <h3>Recently Completed</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>Memorial</th>
-                <th>Cemetery</th>
-                <th>Date</th>
-                <th>Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading && <tr><td colSpan="4" className="meta">Loading...</td></tr>}
-              {!loading && recent.length === 0 && <tr><td colSpan="4" className="meta">No completed services yet.</td></tr>}
-              {!loading && recent.map((svc) => (
-                <tr key={svc.id}>
-                  <td>{svc.memorial_name}</td>
-                  <td>{svc.cemetery_name || '-'}</td>
-                  <td>{formatDateOnly(svc.completed_date)}</td>
-                  <td>{svc.amount != null ? formatCurrency(Number(svc.amount)) : '-'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="scroll-window scroll-window-lg">
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Memorial</th>
+                    <th>Cemetery</th>
+                    <th>Date</th>
+                    <th>Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading && <tr><td colSpan="4" className="meta">Loading...</td></tr>}
+                  {!loading && recent.length === 0 && <tr><td colSpan="4" className="meta">No completed services yet.</td></tr>}
+                  {!loading && recent.map((svc) => (
+                    <tr key={svc.id}>
+                      <td>{svc.memorial_name}</td>
+                      <td>{svc.cemetery_name || '-'}</td>
+                      <td>{formatDateOnly(svc.completed_date)}</td>
+                      <td>{svc.amount != null ? formatCurrency(Number(svc.amount)) : '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
 
         <div className="card">
@@ -5812,26 +5829,28 @@ function MemorialsPageModern() {
             <p className="meta">No memorials match that search.</p>
           )}
           {!memorialState.loading && filteredMemorials.length > 0 && (
-            <div className="record-stack">
-              {filteredMemorials.map((memorial) => (
-                <button
-                  key={memorial.id}
-                  type="button"
-                  className={`record-card${String(selectedId) === String(memorial.id) ? ' active' : ''}`}
-                  onClick={() => setSelectedId(String(memorial.id))}
-                >
-                  <div className="record-card-header">
-                    <span className="stone-chip">Stone Record</span>
-                    <span className="meta">{memorial.material_label}</span>
-                  </div>
-                  <strong>{memorial.name_on_stone || memorial.customer || 'Memorial record'}</strong>
-                  <span>{memorial.cemetery || 'No cemetery listed'}</span>
-                  <div className="record-card-meta">
-                    <span>Customer: {memorial.customer || 'Unknown'}</span>
-                    <span>Last service: {memorial.last_service_date ? formatDateOnly(memorial.last_service_date) : 'Not logged'}</span>
-                  </div>
-                </button>
-              ))}
+            <div className="scroll-window scroll-window-lg">
+              <div className="record-stack">
+                {filteredMemorials.map((memorial) => (
+                  <button
+                    key={memorial.id}
+                    type="button"
+                    className={`record-card${String(selectedId) === String(memorial.id) ? ' active' : ''}`}
+                    onClick={() => setSelectedId(String(memorial.id))}
+                  >
+                    <div className="record-card-header">
+                      <span className="stone-chip">Stone Record</span>
+                      <span className="meta">{memorial.material_label}</span>
+                    </div>
+                    <strong>{memorial.name_on_stone || memorial.customer || 'Memorial record'}</strong>
+                    <span>{memorial.cemetery || 'No cemetery listed'}</span>
+                    <div className="record-card-meta">
+                      <span>Customer: {memorial.customer || 'Unknown'}</span>
+                      <span>Last service: {memorial.last_service_date ? formatDateOnly(memorial.last_service_date) : 'Not logged'}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -6087,50 +6106,52 @@ function CustomersPageModern({ sessionUser }) {
               )}
             </div>
           </div>
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Customer</th>
-                  <th>Memorials</th>
-                  <th>Email</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {customerState.loading && <tr><td colSpan="4" className="meta">Loading customers...</td></tr>}
-                {!customerState.loading && customers.length === 0 && <tr><td colSpan="4" className="meta">No customers yet.</td></tr>}
-                {!customerState.loading && customers.length > 0 && filteredCustomers.length === 0 && (
-                  <tr><td colSpan="4" className="meta">No customers match that search.</td></tr>
-                )}
-                {!customerState.loading && filteredCustomers.map((customer) => (
-                  <tr key={customer.id}>
-                    <td>
-                      <strong>{customer.full_name}</strong>
-                      <div className="meta">{customer.how_heard_about_us || 'Referral source not captured yet'}</div>
-                    </td>
-                    <td>{customer.memorials_count || 0}</td>
-                    <td>{customer.email || '-'}</td>
-                    <td>
-                      <div className="table-action-cell">
-                        <button className="ghost-btn" type="button" onClick={() => startEdit(customer)}>Edit</button>
-                        <button
-                          className="ghost-btn"
-                          type="button"
-                          onClick={() => openOnboardingWorkflow({
-                            existing_customer_id: customer.id,
-                            customer_name: customer.full_name
-                          })}
-                        >
-                          Add Stone
-                        </button>
-                        <button className="ghost-btn" type="button" onClick={() => handleDelete(customer.id)}>Delete</button>
-                      </div>
-                    </td>
+          <div className="scroll-window scroll-window-lg">
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Customer</th>
+                    <th>Memorials</th>
+                    <th>Email</th>
+                    <th>Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {customerState.loading && <tr><td colSpan="4" className="meta">Loading customers...</td></tr>}
+                  {!customerState.loading && customers.length === 0 && <tr><td colSpan="4" className="meta">No customers yet.</td></tr>}
+                  {!customerState.loading && customers.length > 0 && filteredCustomers.length === 0 && (
+                    <tr><td colSpan="4" className="meta">No customers match that search.</td></tr>
+                  )}
+                  {!customerState.loading && filteredCustomers.map((customer) => (
+                    <tr key={customer.id}>
+                      <td>
+                        <strong>{customer.full_name}</strong>
+                        <div className="meta">{customer.how_heard_about_us || 'Referral source not captured yet'}</div>
+                      </td>
+                      <td>{customer.memorials_count || 0}</td>
+                      <td>{customer.email || '-'}</td>
+                      <td>
+                        <div className="table-action-cell">
+                          <button className="ghost-btn" type="button" onClick={() => startEdit(customer)}>Edit</button>
+                          <button
+                            className="ghost-btn"
+                            type="button"
+                            onClick={() => openOnboardingWorkflow({
+                              existing_customer_id: customer.id,
+                              customer_name: customer.full_name
+                            })}
+                          >
+                            Add Stone
+                          </button>
+                          <button className="ghost-btn" type="button" onClick={() => handleDelete(customer.id)}>Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </section>
