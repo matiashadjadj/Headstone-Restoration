@@ -102,6 +102,8 @@ class Memorial(TimestampedModel):
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name="memorials")
     plot = models.ForeignKey(Plot, on_delete=models.PROTECT, related_name="memorials")
 
+    name = models.CharField(max_length=255, blank=True)
+
     material = models.CharField(max_length=50, choices=Material.choices, default=Material.OTHER)
     inscription_text = models.TextField(blank=True)
     condition_summary = models.TextField(blank=True)
@@ -109,7 +111,7 @@ class Memorial(TimestampedModel):
     notes = models.TextField(blank=True)
 
     def __str__(self) -> str:
-        return f"Memorial #{self.id} ({self.customer.full_name})"
+        return self.name or f"Memorial #{self.id} ({self.customer.full_name})"
 
 
 # -----------------------

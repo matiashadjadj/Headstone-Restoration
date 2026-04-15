@@ -69,6 +69,10 @@ fi
 
 # Use the default settings module unless the caller overrides it.
 export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-config.settings}"
+export PYTHONPATH="${PROJECT_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
+export DEBUG="${DEBUG:-1}"
+
+echo "DEBUG=${DEBUG}"
 
 # Print active DB target to avoid confusion when switching environments.
 REPO_ROOT="$REPO_ROOT" python - <<'PY'
@@ -98,11 +102,12 @@ if [[ "${SKIP_MIGRATE:-0}" != "1" ]]; then
   python "$PROJECT_ROOT/manage.py" migrate
 fi
 
-# Start the frontend static server (served from /frontent) by default.
-# Django also serves the built/static files; this helper keeps 5173 available for local dev.
+# The frontend now expects same-origin /api/... calls.
+# By default, rely on Django static serving at /static/index.html so local auth/API flows match production.
+# Set START_FRONTEND=1 if you explicitly want a separate static file server for non-API UI work.
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 AUTO_FRONTEND_PORT="${AUTO_FRONTEND_PORT:-1}"
-if [[ "${START_FRONTEND:-1}" == "1" ]]; then
+if [[ "${START_FRONTEND:-0}" == "1" ]]; then
   if FRONTEND_DIR="$(resolve_frontend_dir)"; then
     FRONTEND_BIND_PORT="$FRONTEND_PORT"
     if [[ "$(is_port_in_use "$FRONTEND_BIND_PORT")" == "1" ]]; then
@@ -135,6 +140,8 @@ if [[ "${START_FRONTEND:-1}" == "1" ]]; then
   else
     echo "Frontend directory with index.html not found at $REPO_ROOT/frontent or $REPO_ROOT/frontend; skipping frontend server."
   fi
+else
+  echo "Skipping standalone frontend server. Django will serve the frontend from the backend port."
 fi
 
 cleanup() {
@@ -147,6 +154,24 @@ trap cleanup EXIT INT TERM
 # Start Django in the foreground so logs stay visible; bind address/port configurable.
 BIND_ADDR="${BIND_ADDR:-127.0.0.1}"
 PORT="${PORT:-8000}"
+AUTO_BACKEND_PORT="${AUTO_BACKEND_PORT:-1}"
 RUNSERVER_ARGS="${RUNSERVER_ARGS:---noreload}"
+
+if [[ "$(is_port_in_use "$PORT")" == "1" ]]; then
+  if [[ "$AUTO_BACKEND_PORT" == "1" ]]; then
+    if ALT_PORT="$(find_available_port "$((PORT + 1))")"; then
+      echo "Backend port ${PORT} is in use; starting Django on http://${BIND_ADDR}:${ALT_PORT}"
+      PORT="$ALT_PORT"
+    else
+      echo "Backend port ${PORT} is in use and no alternate port was found."
+      exit 1
+    fi
+  else
+    echo "Backend port ${PORT} is in use. Set AUTO_BACKEND_PORT=1 to auto-pick an open port."
+    exit 1
+  fi
+fi
+
 echo "Starting Django at http://${BIND_ADDR}:${PORT}"
+echo "Frontend entrypoint: http://${BIND_ADDR}:${PORT}/static/index.html"
 exec python "$PROJECT_ROOT/manage.py" runserver "${BIND_ADDR}:${PORT}" $RUNSERVER_ARGS
