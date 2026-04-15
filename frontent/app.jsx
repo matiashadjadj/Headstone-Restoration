@@ -106,6 +106,19 @@ function BrandMark({ variant = 'icon', className = '', decorative = false }) {
   );
 }
 
+function BrandSignature({ note = 'Memorial care and restoration', className = '' }) {
+  const classes = ['brand-signature', className].filter(Boolean).join(' ');
+  return (
+    <div className={classes}>
+      <BrandMark variant="icon" className="brand-signature-icon" decorative />
+      <div className="brand-signature-copy">
+        <strong>Headstone Restoration</strong>
+        <span>{note}</span>
+      </div>
+    </div>
+  );
+}
+
 function getPhotoTitle(photo) {
   return photo?.customer_name || photo?.memorial_name || photo?.job_title || `Photo #${photo?.id || ''}`;
 }
@@ -3716,9 +3729,6 @@ function EmailsPage() {
 
   return (
     <>
-      <div className="page-brand-banner">
-        <BrandMark variant="header" className="page-brand-banner-image" />
-      </div>
       <h1 className="page-title">Email Center</h1>
       <p className="page-subtitle">Send real outbound emails to customers or ad hoc recipients from one internal workflow.</p>
 
@@ -3772,6 +3782,7 @@ function EmailsPage() {
 
         <div className="card">
           <h3>Compose</h3>
+          <BrandSignature note="Signature preview for outgoing emails." />
           <form className="form" onSubmit={handleSend}>
             <label>Manual Recipients</label>
             <textarea
@@ -3962,9 +3973,6 @@ function AdminInvoicesPage() {
 
   return (
     <>
-      <div className="page-brand-banner">
-        <BrandMark variant="header" className="page-brand-banner-image" />
-      </div>
       <h1 className="page-title">Invoices</h1>
       <p className="page-subtitle">Review invoices, personalize the message, and email Stripe payment links to clients.</p>
 
@@ -4043,6 +4051,7 @@ function AdminInvoicesPage() {
               <p className="meta">Each email is personalized per client and includes a Stripe-hosted payment link.</p>
             </div>
           </div>
+          <BrandSignature note="Signature preview for invoice emails." />
 
           {selectedInvoice && (
             <div className="job-detail-summary">
