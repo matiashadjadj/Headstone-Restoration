@@ -5,7 +5,7 @@ from rest_framework import serializers
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.authentication import BasicAuthentication, SessionAuthentication
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from django.utils import timezone
 from django.db import models, transaction
 from django.db.models import Q, Sum
@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 
 from communications.exceptions import EmailDeliveryError
 from communications.services import resolve_from_email, send_email
-from core.models import Service, ServiceOption, Employee, EmployeeInvite, UserProfile, ServiceAssignment, Invoice, Memorial, Customer, Cemetery, Plot, Payment, Photo, CustomerSurveyRequest, CustomerSurveySubmission
+from core.models import Service, ServiceOption, ServiceStatusHistory, Employee, EmployeeInvite, UserProfile, ServiceAssignment, Invoice, Memorial, Customer, Cemetery, Plot, Payment, Photo, CustomerSurveyRequest, CustomerSurveySubmission
 from payments import stripe_client
 from core.api.serializers import (
     AssignTechnicianSerializer,
@@ -35,6 +35,7 @@ from core.api.serializers import (
     MemorialSummarySerializer,
     MemorialCreateSerializer,
     CustomerSummarySerializer,
+    CustomerHistorySerializer,
     CemeterySummarySerializer,
     CemeteryUpsertSerializer,
     TechnicianSerializer,
@@ -86,6 +87,311 @@ DEFAULT_INVOICE_BODY = (
 
 EMAIL_BRAND_LOGO_ICON_PATH = "/static/logo-icon.png"
 EMAIL_BRAND_URL_RE = re.compile(r"https?://[^\s<]+")
+
+
+def customer_history_timestamp(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if timezone.is_naive(value):
+            return timezone.make_aware(value, timezone.get_current_timezone())
+        return value
+    return timezone.make_aware(
+        datetime.combine(value, time.min),
+        timezone.get_current_timezone(),
+    )
+
+
+def build_customer_history(customer: Customer) -> list[dict]:
+    memorials = list(
+        customer.memorials.select_related("plot__cemetery")
+        .order_by("-created_at", "-id")
+    )
+    services = list(
+        Service.objects.filter(memorial__customer=customer)
+        .select_related("memorial__plot__cemetery", "service_option")
+        .order_by("-created_at", "-id")
+    )
+    status_history = list(
+        ServiceStatusHistory.objects.filter(service__memorial__customer=customer)
+        .select_related("service__memorial__plot__cemetery", "service__service_option", "changed_by")
+        .order_by("-changed_at", "-id")
+    )
+    survey_requests = list(
+        CustomerSurveyRequest.objects.filter(service__memorial__customer=customer)
+        .select_related("service__memorial__plot__cemetery", "service__service_option", "submission")
+        .order_by("-created_at", "-id")
+    )
+    invoices = list(
+        Invoice.objects.filter(customer=customer)
+        .select_related("service__memorial__plot__cemetery", "service__service_option")
+        .order_by("-created_at", "-id")
+    )
+    payments = list(
+        Payment.objects.filter(invoice__customer=customer)
+        .select_related("invoice__service__memorial__plot__cemetery", "invoice__service__service_option")
+        .order_by("-created_at", "-id")
+    )
+    photos = list(
+        Photo.objects.filter(memorial__customer=customer)
+        .select_related("memorial__plot__cemetery", "service__service_option")
+        .order_by("-created_at", "-id")
+    )
+
+    entries = [
+        {
+            "key": f"customer-{customer.id}-created",
+            "kind": "customer_created",
+            "occurred_at": customer_history_timestamp(customer.created_at),
+            "occurred_granularity": "datetime",
+            "title": "Customer created",
+            "description": "Customer profile was added to the system.",
+            "memorial_id": None,
+            "memorial_name": "",
+            "cemetery_name": "",
+            "service_id": None,
+            "service_status": "",
+            "invoice_id": None,
+            "payment_id": None,
+        }
+    ]
+
+    for memorial in memorials:
+        cemetery_name = memorial.plot.cemetery.name if memorial.plot_id and memorial.plot.cemetery_id else ""
+        entries.append(
+            {
+                "key": f"memorial-{memorial.id}-created",
+                "kind": "memorial_created",
+                "occurred_at": customer_history_timestamp(memorial.created_at),
+                "occurred_granularity": "datetime",
+                "title": "Memorial added",
+                "description": memorial.name or "A memorial record was attached to this customer.",
+                "memorial_id": memorial.id,
+                "memorial_name": memorial.name or "",
+                "cemetery_name": cemetery_name,
+                "service_id": None,
+                "service_status": "",
+                "invoice_id": None,
+                "payment_id": None,
+            }
+        )
+
+    for service in services:
+        cemetery_name = service.memorial.plot.cemetery.name if service.memorial_id and service.memorial.plot_id else ""
+        memorial_name = service.memorial.name if service.memorial_id else ""
+        service_name = service.service_type_label or "Service"
+        entries.append(
+            {
+                "key": f"service-{service.id}-created",
+                "kind": "service_created",
+                "occurred_at": customer_history_timestamp(service.created_at),
+                "occurred_granularity": "datetime",
+                "title": "Service created",
+                "description": f"{service_name} job opened.",
+                "memorial_id": service.memorial_id,
+                "memorial_name": memorial_name,
+                "cemetery_name": cemetery_name,
+                "service_id": service.id,
+                "service_status": service.status,
+                "invoice_id": None,
+                "payment_id": None,
+            }
+        )
+        if service.scheduled_start:
+            entries.append(
+                {
+                    "key": f"service-{service.id}-scheduled",
+                    "kind": "service_scheduled",
+                    "occurred_at": customer_history_timestamp(service.scheduled_start),
+                    "occurred_granularity": "datetime",
+                    "title": "Service scheduled",
+                    "description": f"{service_name} scheduled.",
+                    "memorial_id": service.memorial_id,
+                    "memorial_name": memorial_name,
+                    "cemetery_name": cemetery_name,
+                    "service_id": service.id,
+                    "service_status": service.status,
+                    "invoice_id": None,
+                    "payment_id": None,
+                }
+            )
+        if service.completed_date:
+            entries.append(
+                {
+                    "key": f"service-{service.id}-completed",
+                    "kind": "service_completed",
+                    "occurred_at": customer_history_timestamp(service.completed_date),
+                    "occurred_granularity": "date",
+                    "title": "Service completed",
+                    "description": f"{service_name} marked complete.",
+                    "memorial_id": service.memorial_id,
+                    "memorial_name": memorial_name,
+                    "cemetery_name": cemetery_name,
+                    "service_id": service.id,
+                    "service_status": service.status,
+                    "invoice_id": None,
+                    "payment_id": None,
+                }
+            )
+
+    for change in status_history:
+        service = change.service
+        cemetery_name = service.memorial.plot.cemetery.name if service.memorial_id and service.memorial.plot_id else ""
+        memorial_name = service.memorial.name if service.memorial_id else ""
+        changer = change.changed_by.full_name if change.changed_by_id else "System"
+        old_status = change.old_status.replace("_", " ").title() if change.old_status else "Unknown"
+        new_status = change.new_status.replace("_", " ").title()
+        entries.append(
+            {
+                "key": f"service-status-{change.id}",
+                "kind": "service_status_changed",
+                "occurred_at": customer_history_timestamp(change.changed_at),
+                "occurred_granularity": "datetime",
+                "title": "Service status updated",
+                "description": f"{old_status} to {new_status} by {changer}.",
+                "memorial_id": service.memorial_id,
+                "memorial_name": memorial_name,
+                "cemetery_name": cemetery_name,
+                "service_id": service.id,
+                "service_status": change.new_status,
+                "invoice_id": None,
+                "payment_id": None,
+            }
+        )
+
+    for survey_request in survey_requests:
+        service = survey_request.service
+        cemetery_name = service.memorial.plot.cemetery.name if service.memorial_id and service.memorial.plot_id else ""
+        memorial_name = service.memorial.name if service.memorial_id else ""
+        if survey_request.sent_at:
+            entries.append(
+                {
+                    "key": f"survey-request-{survey_request.id}-sent",
+                    "kind": "survey_sent",
+                    "occurred_at": customer_history_timestamp(survey_request.sent_at),
+                    "occurred_granularity": "datetime",
+                    "title": "Survey sent",
+                    "description": "Customer survey link was sent.",
+                    "memorial_id": service.memorial_id,
+                    "memorial_name": memorial_name,
+                    "cemetery_name": cemetery_name,
+                    "service_id": service.id,
+                    "service_status": service.status,
+                    "invoice_id": None,
+                    "payment_id": None,
+                }
+            )
+        submission = getattr(survey_request, "submission", None)
+        if submission:
+            entries.append(
+                {
+                    "key": f"survey-request-{survey_request.id}-submitted",
+                    "kind": "survey_submitted",
+                    "occurred_at": customer_history_timestamp(submission.created_at),
+                    "occurred_granularity": "datetime",
+                    "title": "Survey submitted",
+                    "description": "Customer submitted location details.",
+                    "memorial_id": service.memorial_id,
+                    "memorial_name": memorial_name,
+                    "cemetery_name": cemetery_name,
+                    "service_id": service.id,
+                    "service_status": service.status,
+                    "invoice_id": None,
+                    "payment_id": None,
+                }
+            )
+
+    for invoice in invoices:
+        service = invoice.service
+        memorial = service.memorial if service and service.memorial_id else None
+        cemetery_name = memorial.plot.cemetery.name if memorial and memorial.plot_id else ""
+        memorial_name = memorial.name if memorial else ""
+        service_status = service.status if service else ""
+        if invoice.issued_date:
+            entries.append(
+                {
+                    "key": f"invoice-{invoice.id}-issued",
+                    "kind": "invoice_issued",
+                    "occurred_at": customer_history_timestamp(invoice.issued_date),
+                    "occurred_granularity": "date",
+                    "title": "Invoice issued",
+                    "description": f"Invoice #{invoice.id} for ${invoice.total_amount:.2f}.",
+                    "memorial_id": memorial.id if memorial else None,
+                    "memorial_name": memorial_name,
+                    "cemetery_name": cemetery_name,
+                    "service_id": service.id if service else None,
+                    "service_status": service_status,
+                    "invoice_id": invoice.id,
+                    "payment_id": None,
+                }
+            )
+        if invoice.paid_at:
+            entries.append(
+                {
+                    "key": f"invoice-{invoice.id}-paid",
+                    "kind": "invoice_paid",
+                    "occurred_at": customer_history_timestamp(invoice.paid_at),
+                    "occurred_granularity": "datetime",
+                    "title": "Invoice paid",
+                    "description": f"Invoice #{invoice.id} marked paid.",
+                    "memorial_id": memorial.id if memorial else None,
+                    "memorial_name": memorial_name,
+                    "cemetery_name": cemetery_name,
+                    "service_id": service.id if service else None,
+                    "service_status": service_status,
+                    "invoice_id": invoice.id,
+                    "payment_id": None,
+                }
+            )
+
+    for payment in payments:
+        invoice = payment.invoice
+        service = invoice.service
+        memorial = service.memorial if service and service.memorial_id else None
+        cemetery_name = memorial.plot.cemetery.name if memorial and memorial.plot_id else ""
+        memorial_name = memorial.name if memorial else ""
+        occurred_at = payment.succeeded_at or payment.created_at
+        title = "Payment received" if payment.status == Payment.Status.SUCCEEDED else "Payment recorded"
+        entries.append(
+            {
+                "key": f"payment-{payment.id}",
+                "kind": "payment",
+                "occurred_at": customer_history_timestamp(occurred_at),
+                "occurred_granularity": "datetime",
+                "title": title,
+                "description": f"{payment.get_method_display()} payment {payment.status.replace('_', ' ')} for ${payment.amount:.2f}.",
+                "memorial_id": memorial.id if memorial else None,
+                "memorial_name": memorial_name,
+                "cemetery_name": cemetery_name,
+                "service_id": service.id if service else None,
+                "service_status": service.status if service else "",
+                "invoice_id": invoice.id,
+                "payment_id": payment.id,
+            }
+        )
+
+    for photo in photos:
+        cemetery_name = photo.memorial.plot.cemetery.name if photo.memorial_id and photo.memorial.plot_id else ""
+        memorial_name = photo.memorial.name if photo.memorial_id else ""
+        entries.append(
+            {
+                "key": f"photo-{photo.id}",
+                "kind": "photo_uploaded",
+                "occurred_at": customer_history_timestamp(photo.created_at),
+                "occurred_granularity": "datetime",
+                "title": "Photo uploaded",
+                "description": photo.caption or f"{photo.get_photo_type_display()} photo added.",
+                "memorial_id": photo.memorial_id,
+                "memorial_name": memorial_name,
+                "cemetery_name": cemetery_name,
+                "service_id": photo.service_id,
+                "service_status": photo.service.status if photo.service_id else "",
+                "invoice_id": None,
+                "payment_id": None,
+            }
+        )
+
+    return sorted(entries, key=lambda item: item["occurred_at"], reverse=True)
 
 
 def resolve_session_user(user, request=None):
@@ -1461,6 +1767,28 @@ class CustomerManageDetailView(APIView):
         customer = get_object_or_404(Customer, id=customer_id)
         customer.delete()
         return Response({"ok": True}, status=status.HTTP_200_OK)
+
+
+class CustomerHistoryDetailView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = [BasicAuthentication]
+
+    def get(self, request, customer_id):
+        customer = (
+            Customer.objects.filter(id=customer_id)
+            .annotate(
+                memorials_count=models.Count("memorials", distinct=True),
+                last_contact=models.Max("memorials__services__completed_date"),
+            )
+            .first()
+        )
+        if not customer:
+            raise Http404
+        payload = {
+            "customer": CustomerSummarySerializer(customer).data,
+            "history": build_customer_history(customer),
+        }
+        return Response(CustomerHistorySerializer(payload).data, status=status.HTTP_200_OK)
 
 
 @method_decorator(csrf_exempt, name="dispatch")

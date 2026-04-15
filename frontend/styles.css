@@ -1614,6 +1614,39 @@ textarea {
   font-size: 13px;
 }
 
+.history-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.history-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 16px 18px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.history-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.history-card p {
+  margin: 0 0 10px;
+  color: #475569;
+}
+
+.history-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  color: #64748b;
+  font-size: 13px;
+}
+
 .checkbox-row {
   align-items: stretch;
 }

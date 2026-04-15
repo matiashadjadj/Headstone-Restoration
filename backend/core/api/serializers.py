@@ -204,6 +204,27 @@ class CustomerSummarySerializer(serializers.ModelSerializer):
         fields = ["id", "full_name", "email", "phone", "memorials_count", "last_contact"]
 
 
+class CustomerHistoryEntrySerializer(serializers.Serializer):
+    key = serializers.CharField()
+    kind = serializers.CharField()
+    occurred_at = serializers.DateTimeField()
+    occurred_granularity = serializers.ChoiceField(choices=["date", "datetime"])
+    title = serializers.CharField()
+    description = serializers.CharField(allow_blank=True)
+    memorial_id = serializers.IntegerField(required=False, allow_null=True)
+    memorial_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    cemetery_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    service_id = serializers.IntegerField(required=False, allow_null=True)
+    service_status = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    invoice_id = serializers.IntegerField(required=False, allow_null=True)
+    payment_id = serializers.IntegerField(required=False, allow_null=True)
+
+
+class CustomerHistorySerializer(serializers.Serializer):
+    customer = CustomerSummarySerializer()
+    history = CustomerHistoryEntrySerializer(many=True)
+
+
 class CemeterySummarySerializer(serializers.ModelSerializer):
     memorials_count = serializers.IntegerField(read_only=True)
     active_services = serializers.IntegerField(read_only=True)

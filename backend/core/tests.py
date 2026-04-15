@@ -1,6 +1,10 @@
+import os
+import tempfile
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.core import mail
+from django.core.management import call_command
 from django.contrib.auth.models import User
 from django.test.client import BOUNDARY, MULTIPART_CONTENT, encode_multipart
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -11,6 +15,93 @@ from django.utils import timezone
 from communications.exceptions import EmailDeliveryError
 from communications.services import send_email
 from core.models import Cemetery, Customer, CustomerSurveyRequest, CustomerSurveySubmission, Employee, EmployeeInvite, Invoice, InvoiceItem, Memorial, Payment, Photo, Plot, Service, ServiceAssignment, ServiceOption, UserProfile
+
+
+class ImportCustomersCommandTests(TestCase):
+    def _write_csv(self, contents):
+        temp_file = tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False)
+        self.addCleanup(lambda: os.path.exists(temp_file.name) and os.unlink(temp_file.name))
+        temp_file.write(contents)
+        temp_file.close()
+        return temp_file.name
+
+    def test_import_customers_creates_rows_from_csv(self):
+        csv_path = self._write_csv(
+            "name,email,phone,street,city,state,zip,notes\n"
+            "Jane Doe,jane@example.com,555-1111,123 Main St,Albany,NY,12207,VIP\n"
+        )
+
+        call_command("import_customers", csv_path)
+
+        customer = Customer.objects.get(email="jane@example.com")
+        self.assertEqual(customer.full_name, "Jane Doe")
+        self.assertEqual(customer.address_line1, "123 Main St")
+        self.assertEqual(customer.postal_code, "12207")
+        self.assertEqual(customer.notes, "VIP")
+
+    def test_import_customers_dry_run_does_not_persist(self):
+        csv_path = self._write_csv(
+            "full_name,email\n"
+            "Dry Run Customer,dryrun@example.com\n"
+        )
+
+        call_command("import_customers", csv_path, "--dry-run")
+
+        self.assertFalse(Customer.objects.filter(email="dryrun@example.com").exists())
+
+    def test_import_customers_updates_existing_when_enabled(self):
+        Customer.objects.create(
+            full_name="Jane Doe",
+            email="jane@example.com",
+            phone="555-0000",
+            city="Old City",
+        )
+        csv_path = self._write_csv(
+            "full_name,email,phone,city\n"
+            "Jane Doe,jane@example.com,555-9999,New City\n"
+        )
+
+        call_command("import_customers", csv_path, "--update-existing")
+
+        customer = Customer.objects.get(email="jane@example.com")
+        self.assertEqual(customer.phone, "555-9999")
+        self.assertEqual(customer.city, "New City")
+
+
+class ImportCustomerReportCommandTests(TestCase):
+    def _write_csv(self, contents):
+        temp_file = tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False)
+        self.addCleanup(lambda: os.path.exists(temp_file.name) and os.unlink(temp_file.name))
+        temp_file.write(contents)
+        temp_file.close()
+        return temp_file.name
+
+    def test_import_customer_report_groups_rows_by_bill_to_or_email(self):
+        csv_path = self._write_csv(
+            "Customer ID,Last Name,First Name,Linked Properties,Billing First Name,Billing Last Name,Subscription Last Completed,Email Address,Latitude,Longitude,Phone 1,Initial Price,Bill To Customer ID\n"
+            "12062,Hickman,Alice,,Judi,Hickman,04/17/24,jnjhickman2@msn.com,37.689358,-113.063240,4356914788,110.00,12061\n"
+            "12063,John Hickman,Cecil,,Judi,Hickman,04/17/24,jnjhickman2@msn.com,37.690857,-113.064919,4356914788,125.00,12061\n"
+        )
+
+        call_command("import_customer_report", csv_path)
+
+        customers = list(Customer.objects.all())
+        self.assertEqual(len(customers), 1)
+        self.assertEqual(customers[0].full_name, "Judi Hickman")
+        self.assertEqual(customers[0].email, "jnjhickman2@msn.com")
+        self.assertEqual(customers[0].phone, "(435) 691-4788")
+        self.assertIn("Legacy customer IDs: 12062, 12063", customers[0].notes)
+        self.assertIn("Legacy bill-to IDs: 12061", customers[0].notes)
+
+    def test_import_customer_report_dry_run_does_not_persist(self):
+        csv_path = self._write_csv(
+            "Customer ID,Last Name,First Name,Linked Properties,Billing First Name,Billing Last Name,Subscription Last Completed,Email Address,Latitude,Longitude,Phone 1,Initial Price,Bill To Customer ID\n"
+            "10002,Brown,Jason,10003,Jason,Brown,-,jasonb@beavercityut.gov,38.273926,-112.641685,4354211008,400.00,\n"
+        )
+
+        call_command("import_customer_report", csv_path, "--dry-run")
+
+        self.assertEqual(Customer.objects.count(), 0)
 
 
 @override_settings(STRIPE_SECRET_KEY="sk_test_dummy", STRIPE_PUBLISHABLE_KEY="pk_test_dummy")
@@ -1675,3 +1766,86 @@ class DashboardSummaryTests(TestCase):
         self.assertEqual(payload["upcoming_services"][0]["id"], assigned_service.id)
         self.assertEqual(len(payload["recent_completed"]), 1)
         self.assertEqual(payload["recent_completed"][0]["id"], completed_service.id)
+
+
+class CustomerHistoryViewTests(TestCase):
+    def setUp(self):
+        self.customer = Customer.objects.create(
+            full_name="Margaret Hill",
+            email="margaret@example.com",
+            phone="555-1100",
+        )
+        self.cemetery = Cemetery.objects.create(name="Oak Ridge")
+        self.plot = Plot.objects.create(cemetery=self.cemetery, section="A", row="2", plot_number="17")
+        self.memorial = Memorial.objects.create(
+            customer=self.customer,
+            plot=self.plot,
+            name="Hill Family Stone",
+        )
+        self.service_option, _ = ServiceOption.objects.get_or_create(name="Cleaning")
+        self.service = Service.objects.create(
+            memorial=self.memorial,
+            service_option=self.service_option,
+            service_type=Service.ServiceType.CLEANING,
+            status=Service.Status.COMPLETED,
+            scheduled_start=timezone.now() - timedelta(days=2),
+            completed_date=timezone.localdate() - timedelta(days=1),
+        )
+        self.survey_request = CustomerSurveyRequest.objects.create(
+            service=self.service,
+            sent_at=timezone.now() - timedelta(days=3),
+        )
+        CustomerSurveySubmission.objects.create(
+            survey_request=self.survey_request,
+            customer_name=self.customer.full_name,
+            email=self.customer.email,
+            phone=self.customer.phone,
+        )
+        self.invoice = Invoice.objects.create(
+            customer=self.customer,
+            service=self.service,
+            status=Invoice.Status.PAID,
+            issued_date=timezone.localdate() - timedelta(days=1),
+            total_amount="245.00",
+            paid_at=timezone.now() - timedelta(hours=6),
+        )
+        Payment.objects.create(
+            invoice=self.invoice,
+            provider=Payment.Provider.MANUAL,
+            method=Payment.Method.CHECK,
+            status=Payment.Status.SUCCEEDED,
+            currency="usd",
+            amount="245.00",
+            succeeded_at=timezone.now() - timedelta(hours=5),
+        )
+        Photo.objects.create(
+            memorial=self.memorial,
+            service=self.service,
+            photo_type=Photo.PhotoType.AFTER,
+            image_url="https://example.com/after.jpg",
+            caption="Completed restoration",
+        )
+
+    def test_returns_customer_history_timeline(self):
+        response = self.client.get(reverse("manage-customer-history", args=[self.customer.id]))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["customer"]["id"], self.customer.id)
+        self.assertGreaterEqual(len(payload["history"]), 8)
+
+        occurred_values = [entry["occurred_at"] for entry in payload["history"]]
+        self.assertEqual(occurred_values, sorted(occurred_values, reverse=True))
+
+        event_kinds = {entry["kind"] for entry in payload["history"]}
+        self.assertIn("customer_created", event_kinds)
+        self.assertIn("memorial_created", event_kinds)
+        self.assertIn("service_created", event_kinds)
+        self.assertIn("service_scheduled", event_kinds)
+        self.assertIn("service_completed", event_kinds)
+        self.assertIn("survey_sent", event_kinds)
+        self.assertIn("survey_submitted", event_kinds)
+        self.assertIn("invoice_issued", event_kinds)
+        self.assertIn("invoice_paid", event_kinds)
+        self.assertIn("payment", event_kinds)
+        self.assertIn("photo_uploaded", event_kinds)

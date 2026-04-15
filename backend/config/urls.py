@@ -1,8 +1,9 @@
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, include, re_path
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib.staticfiles.urls import staticfiles_urlpatterns
+from django.shortcuts import redirect
 from django.views.generic import RedirectView
 
 urlpatterns = [
@@ -11,6 +12,20 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/", include("core.api.urls")),
     path("", include("core.urls")),
+]
+
+
+def spa_redirect(request, role, spa_path=""):
+    parts = [role.strip("/")]
+    if spa_path:
+        parts.append(spa_path.lstrip("/"))
+    normalized = "/" + "/".join(parts)
+    return redirect(f"/static/index.html#{normalized}")
+
+
+# Allow direct loads and browser refreshes on the hash-routed app sections.
+urlpatterns += [
+    re_path(r"^(frontdesk|employee|customer)(?:/(?P<spa_path>.*))?$", spa_redirect),
 ]
 
 if settings.DEBUG:
