@@ -3641,6 +3641,7 @@ function FrontDeskDashboardPage() {
 function EmailsPage() {
   const customerState = useApi('/customers/', []);
   const [selectedCustomerIds, setSelectedCustomerIds] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
   const [manualRecipients, setManualRecipients] = useState('');
   const [subject, setSubject] = useState('Service update for {{client_name}}');
   const [body, setBody] = useState(
@@ -3656,6 +3657,25 @@ function EmailsPage() {
     () => (customerState.data || []).filter((customer) => Boolean(customer.email)),
     [customerState.data]
   );
+  const normalizedSearchTerm = searchTerm.trim().toLowerCase();
+
+  const filteredCustomersWithEmail = useMemo(() => {
+    if (!normalizedSearchTerm) return customersWithEmail;
+    return customersWithEmail.filter((customer) => {
+      const searchIndex = [
+        customer.full_name,
+        customer.email,
+        customer.phone,
+        customer.city,
+        customer.state,
+        customer.postal_code
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return searchIndex.includes(normalizedSearchTerm);
+    });
+  }, [customersWithEmail, normalizedSearchTerm]);
 
   const selectedCustomers = useMemo(
     () => customersWithEmail.filter((customer) => selectedCustomerIds.includes(customer.id)),
@@ -3684,7 +3704,11 @@ function EmailsPage() {
   }
 
   function selectAll() {
-    setSelectedCustomerIds(customersWithEmail.map((customer) => customer.id));
+    setSelectedCustomerIds((prev) => {
+      const next = new Set(prev);
+      filteredCustomersWithEmail.forEach((customer) => next.add(customer.id));
+      return Array.from(next);
+    });
   }
 
   function clearAll() {
@@ -3749,15 +3773,31 @@ function EmailsPage() {
       <section className="grid-2">
         <div className="card">
           <div className="card-header">
-            <h3>Recipients</h3>
+            <div>
+              <h3>Recipients</h3>
+              <p className="meta">
+                {selectedCustomerIds.length} selected / {customersWithEmail.length} with email addresses
+              </p>
+            </div>
             <div style={{ display: 'flex', gap: '8px' }}>
-              <button className="ghost-btn" type="button" onClick={selectAll}>Select All</button>
+              <button className="ghost-btn" type="button" onClick={selectAll}>Select Visible</button>
               <button className="ghost-btn" type="button" onClick={clearAll}>Clear</button>
             </div>
           </div>
-          <p className="meta">
-            {selectedCustomerIds.length} selected / {customersWithEmail.length} with email addresses
-          </p>
+          <div className="customer-search" style={{ marginBottom: '12px' }}>
+            <input
+              type="search"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search clients by name, email, phone..."
+              aria-label="Search email recipients"
+            />
+            {searchTerm && (
+              <button className="ghost-btn" type="button" onClick={() => setSearchTerm('')}>
+                Clear
+              </button>
+            )}
+          </div>
           <div className="scroll-window scroll-window-lg">
             <div className="table-scroll">
               <table>
@@ -3775,7 +3815,10 @@ function EmailsPage() {
                   {!customerState.loading && customersWithEmail.length === 0 && (
                     <tr><td colSpan="3" className="meta">No customers with emails found.</td></tr>
                   )}
-                  {!customerState.loading && customersWithEmail.map((customer) => (
+                  {!customerState.loading && customersWithEmail.length > 0 && filteredCustomersWithEmail.length === 0 && (
+                    <tr><td colSpan="3" className="meta">No clients match that search.</td></tr>
+                  )}
+                  {!customerState.loading && filteredCustomersWithEmail.map((customer) => (
                     <tr key={customer.id}>
                       <td>
                         <input
@@ -3898,6 +3941,7 @@ function getInvoiceStatusClass(status) {
 function AdminInvoicesPage() {
   const invoiceState = useApi('/manage/invoices/', [], true, { refreshEvent: 'hs:invoice-updated' });
   const [invoices, setInvoices] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState('');
   const [subject, setSubject] = useState('Invoice #{{invoice_id}} for {{client_name}}');
   const [body, setBody] = useState(
@@ -3913,6 +3957,7 @@ function AdminInvoicesPage() {
   const [dueDate, setDueDate] = useState('');
   const [notes, setNotes] = useState('');
   const [sendState, setSendState] = useState({ loading: false, error: '', success: '', checkoutUrl: '' });
+  const normalizedSearchTerm = searchTerm.trim().toLowerCase();
 
   useEffect(() => {
     setInvoices(Array.isArray(invoiceState.data) ? invoiceState.data : []);
@@ -3940,6 +3985,28 @@ function AdminInvoicesPage() {
   const openInvoices = useMemo(() => invoices.filter((invoice) => invoice.status !== 'paid').length, [invoices]);
   const paidInvoices = useMemo(() => invoices.filter((invoice) => invoice.status === 'paid').length, [invoices]);
   const sentInvoices = useMemo(() => invoices.filter((invoice) => invoice.status === 'sent').length, [invoices]);
+  const filteredInvoices = useMemo(() => {
+    if (!normalizedSearchTerm) return invoices;
+    return invoices.filter((invoice) => {
+      const searchIndex = [
+        invoice.id,
+        invoice.customer_name,
+        invoice.customer_email,
+        invoice.service_name,
+        invoice.status,
+        invoice.total_amount
+      ]
+        .filter((value) => value !== null && value !== undefined && value !== '')
+        .join(' ')
+        .toLowerCase();
+      return searchIndex.includes(normalizedSearchTerm);
+    });
+  }, [invoices, normalizedSearchTerm]);
+  const selectableInvoices = useMemo(() => {
+    if (!selectedInvoice) return filteredInvoices;
+    if (filteredInvoices.some((invoice) => invoice.id === selectedInvoice.id)) return filteredInvoices;
+    return [selectedInvoice, ...filteredInvoices];
+  }, [filteredInvoices, selectedInvoice]);
 
   async function handleSend(event) {
     event.preventDefault();
@@ -4024,15 +4091,35 @@ function AdminInvoicesPage() {
           <div className="card-header">
             <div>
               <h3>Invoice Queue</h3>
-              <p className="meta">Unpaid invoices stay at the top so you can send them quickly.</p>
+              <p className="meta">
+                {filteredInvoices.length}
+                {normalizedSearchTerm ? ` of ${invoices.length}` : ''} invoices shown
+              </p>
             </div>
+          </div>
+          <div className="customer-search" style={{ marginBottom: '12px' }}>
+            <input
+              type="search"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search clients, invoice #, email..."
+              aria-label="Search invoices by client"
+            />
+            {searchTerm && (
+              <button className="ghost-btn" type="button" onClick={() => setSearchTerm('')}>
+                Clear
+              </button>
+            )}
           </div>
           {invoiceState.loading && <p className="meta">Loading invoices...</p>}
           {!invoiceState.loading && invoices.length === 0 && <p className="meta">No invoices found.</p>}
-          {!invoiceState.loading && invoices.length > 0 && (
+          {!invoiceState.loading && invoices.length > 0 && filteredInvoices.length === 0 && (
+            <p className="meta">No invoices match that search.</p>
+          )}
+          {!invoiceState.loading && filteredInvoices.length > 0 && (
             <div className="scroll-window scroll-window-lg">
               <div className="invoice-list">
-                {invoices.map((invoice) => (
+                {filteredInvoices.map((invoice) => (
                 <button
                   key={invoice.id}
                   type="button"
@@ -4094,7 +4181,7 @@ function AdminInvoicesPage() {
               required
             >
               <option value="">Select an invoice</option>
-              {invoices.map((invoice) => (
+              {selectableInvoices.map((invoice) => (
                 <option key={invoice.id} value={invoice.id}>
                   #{invoice.id} · {invoice.customer_name} · {formatCurrency(Number(invoice.total_amount || 0))} · {invoice.status || 'draft'}
                 </option>
