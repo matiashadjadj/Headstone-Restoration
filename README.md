@@ -1,88 +1,150 @@
-# HeadStone
+# Headstone Restoration
 
-## Backend Email Foundation
+## Project Overview
 
-The Django backend now has one reusable outbound email path in `backend/communications/`.
+Headstone Restoration is a headstone restoration service. This app is the company's internal workflow tool for managing customers, cemeteries, memorials, restoration jobs, scheduling, employee access, invoices, communication, and photo archives.
 
-- Service entrypoint: `communications.services.send_email(...)`
-- Current provider: `django`
-- Current provider implementation: Django's configured email backend
+The project is organized as:
 
-### Local / Dev Behavior
+- `backend/`: Django application with REST API endpoints, authentication, employee invite flow, service scheduling, payment hooks, email delivery, and static hosting for the frontend
+- `frontend/`: React-based single-page interface served as static assets by Django
+- `render.yaml`: Render deployment configuration for the production web service and PostgreSQL database
 
-By default, email stays development-safe:
+Live deployment:
 
-- `EMAIL_PROVIDER=django`
-- `EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend`
+- `https://headstone-restoration.onrender.com`
 
-With that setup, outbound emails are printed to the Django console instead of being delivered.
+### Core Features
 
-### Production Configuration
+- Customer, cemetery, memorial, and plot management
+- Service scheduling and technician assignment
+- Role-based application areas for admin, front desk, employee, and customer views
+- Photo archive and service photo uploads
+- Employee account invites and password setup flow
+- Invoice and Stripe checkout endpoints
+- Customer email and survey support
 
-Set these environment variables in production:
+## Setup Instructions
 
-- `EMAIL_PROVIDER=django`
-- `DEFAULT_FROM_EMAIL`
-- `PANEL_FROM_EMAIL`
-- `INVITE_FROM_EMAIL`
-- `EMAIL_DEFAULT_REPLY_TO`
-- `EMAIL_BACKEND`
-- `EMAIL_HOST`
-- `EMAIL_PORT`
-- `EMAIL_HOST_USER`
-- `EMAIL_HOST_PASSWORD`
-- `EMAIL_USE_TLS`
-- `EMAIL_TIMEOUT_SECONDS`
+### Prerequisites
 
-Typical SMTP production setup:
+- Python 3.12+
+- `pip`
+- A virtual environment
+- PostgreSQL for full local backend functionality, unless you point `DATABASE_URL` at another supported database
+
+### 1. Clone the repository
+
+```bash
+git clone <your-repo-url>
+cd Headstone-Restoration
+```
+
+### 2. Create and activate a virtual environment
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 3. Install dependencies
+
+For the backend application, install the backend requirements:
+
+```bash
+pip install -r backend/requirements.txt
+```
+
+Note: there is also a large top-level `requirements.txt`, but the deploy configuration and backend app use `backend/requirements.txt`.
+
+### 4. Configure environment variables
+
+Create or update `backend/.env` with the values needed for your local environment.
+
+Minimum variables to check:
 
 ```env
+DJANGO_SECRET_KEY=change-me
+DEBUG=1
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/mysite
+```
+
+Optional integrations:
+
+```env
+STRIPE_SECRET_KEY=
+STRIPE_PUBLISHABLE_KEY=
 EMAIL_PROVIDER=django
-EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
-DEFAULT_FROM_EMAIL=ops@example.com
-PANEL_FROM_EMAIL=ops@example.com
-INVITE_FROM_EMAIL=ops@example.com
-EMAIL_DEFAULT_REPLY_TO=support@example.com
-EMAIL_HOST=smtp.example.com
+EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend
+DEFAULT_FROM_EMAIL=headstone@restoration.com
+PANEL_FROM_EMAIL=headstone@restoration.com
+INVITE_FROM_EMAIL=headstone@restoration.com
+EMAIL_DEFAULT_REPLY_TO=
+EMAIL_FRONTEND_BASE_URL=
+INVITE_EXPIRY_HOURS=72
+EMAIL_HOST=
 EMAIL_PORT=587
-EMAIL_HOST_USER=smtp-user
-EMAIL_HOST_PASSWORD=super-secret
+EMAIL_HOST_USER=
+EMAIL_HOST_PASSWORD=
 EMAIL_USE_TLS=1
 EMAIL_TIMEOUT_SECONDS=10
 ```
 
-### Notes
+### 5. Run migrations
 
-- Logging is emitted for successful and failed outbound sends.
-- The provider abstraction is intentionally small so additional providers can be added later without changing callers.
-- Employee invites have been routed through the shared send path, but invite workflow changes are not part of this pass.
-
-## Employee Invite Flow
-
-Employee account invites are handled entirely in the backend.
-
-- Employee creation endpoint: `POST /api/manage/employees/create/`
-- Optional create flag: `send_invite` (defaults to `true`)
-- Resend endpoint: `POST /api/manage/employees/<employee_id>/invite/resend/`
-- Password setup endpoints:
-  - `GET /api/auth/password-setup/?token=...`
-  - `POST /api/auth/password-setup/`
-
-Behavior:
-
-- Invites use a random token and expire after `INVITE_EXPIRY_HOURS` (default `72`).
-- Resending an invite revokes any previous active invite before issuing a new token.
-- Used, expired, revoked, and unknown tokens are all rejected with the same generic message: `Invite is invalid or expired.`
-- Invite emails are sent through the shared `communications.services.send_email(...)` path.
-
-Invite URL generation:
-
-- Production: set `EMAIL_FRONTEND_BASE_URL`
-- Local fallback: request `Origin`, then Django static URL fallback
-
-Example:
-
-```env
-EMAIL_FRONTEND_BASE_URL=https://app.example.com
-INVITE_EXPIRY_HOURS=72
+```bash
+cd backend
+python3 manage.py migrate
 ```
+
+### 6. Start the app
+
+Recommended local startup:
+
+```bash
+./start.sh
+```
+
+This script:
+
+- activates the virtual environment if it exists in `backend/venv` or the repo-level `venv`
+- runs migrations by default
+- starts Django on an available local port
+- serves the frontend through Django at `/static/index.html`
+
+After startup, open:
+
+- App entrypoint: `http://127.0.0.1:8000/static/index.html`
+- API root prefix: `http://127.0.0.1:8000/api/`
+
+If port `8000` is already in use, `start.sh` can auto-select another open backend port.
+
+### Production Notes
+
+Deployment is configured for Render using:
+
+- `render.yaml`
+- `build.sh`
+
+The production service:
+
+- installs dependencies
+- collects static files
+- runs migrations
+- starts Django with Gunicorn/Uvicorn
+
+Production URL:
+
+- `https://headstone-restoration.onrender.com`
+
+## Team Member Contributions
+
+- Matias: backend development, database and data model design, API work, authentication and employee invite flows, deployment configuration, created and developed core application features, and overall application integration
+- Mitchell: frontend development, UI/workflow updates, and general project assistance during development
+
+## Known Issues
+
+- Automated test coverage still needs improvement. The backend currently does not have a meaningful pytest suite, so more tests should be added for API endpoints and internal workflow logic.
+- The UI and internal workflows can continue to be refined as we get feedback. Areas like scheduling, reporting, and role-based dashboards can be improved further based on staff feedback.
+- Error handling and form validation can be expanded in some areas to make the internal tool more consistent and easier for staff to use.
+
