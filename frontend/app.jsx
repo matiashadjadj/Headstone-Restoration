@@ -6124,48 +6124,38 @@ function CustomersPageModern({ sessionUser }) {
             </div>
           </div>
           <div className="scroll-window scroll-window-lg">
-            <div className="table-scroll">
-              <table className="compact-customer-table">
-                <thead>
-                  <tr>
-                    <th>Customer</th>
-                    <th>Memorials</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {customerState.loading && <tr><td colSpan="3" className="meta">Loading customers...</td></tr>}
-                  {!customerState.loading && customers.length === 0 && <tr><td colSpan="3" className="meta">No customers yet.</td></tr>}
-                  {!customerState.loading && customers.length > 0 && filteredCustomers.length === 0 && (
-                    <tr><td colSpan="3" className="meta">No customers match that search.</td></tr>
-                  )}
-                  {!customerState.loading && filteredCustomers.map((customer) => (
-                    <tr key={customer.id}>
-                      <td>
-                        <strong>{customer.full_name}</strong>
-                        <div className="meta">{customer.how_heard_about_us || 'Referral source not captured yet'}</div>
-                      </td>
-                      <td>{customer.memorials_count || 0}</td>
-                      <td>
-                        <div className="table-action-cell">
-                          <button className="ghost-btn" type="button" onClick={() => startEdit(customer)}>Edit</button>
-                          <button
-                            className="ghost-btn"
-                            type="button"
-                            onClick={() => openOnboardingWorkflow({
-                              existing_customer_id: customer.id,
-                              customer_name: customer.full_name
-                            })}
-                          >
-                            Add Stone
-                          </button>
-                          <button className="ghost-btn" type="button" onClick={() => handleDelete(customer.id)}>Delete</button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="customer-list-stack">
+              {customerState.loading && <div className="meta">Loading customers...</div>}
+              {!customerState.loading && customers.length === 0 && <div className="meta">No customers yet.</div>}
+              {!customerState.loading && customers.length > 0 && filteredCustomers.length === 0 && (
+                <div className="meta">No customers match that search.</div>
+              )}
+              {!customerState.loading && filteredCustomers.map((customer) => (
+                <div key={customer.id} className="customer-row-card">
+                  <div className="customer-row-main">
+                    <strong>{customer.full_name}</strong>
+                    <span className="meta">{customer.how_heard_about_us || 'Referral source not captured yet'}</span>
+                  </div>
+                  <div className="customer-row-count">
+                    <strong>{customer.memorials_count || 0}</strong>
+                    <span className="meta">Memorials</span>
+                  </div>
+                  <div className="customer-row-actions">
+                    <button className="ghost-btn" type="button" onClick={() => startEdit(customer)}>Edit</button>
+                    <button
+                      className="ghost-btn"
+                      type="button"
+                      onClick={() => openOnboardingWorkflow({
+                        existing_customer_id: customer.id,
+                        customer_name: customer.full_name
+                      })}
+                    >
+                      Add Stone
+                    </button>
+                    <button className="ghost-btn" type="button" onClick={() => handleDelete(customer.id)}>Delete</button>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>
