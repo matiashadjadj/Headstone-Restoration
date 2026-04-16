@@ -51,8 +51,7 @@ INSTALLED_APPS = [
     'communications',
     'core',
     'payments',
-    'rest_framework',
-    'django_extensions'
+    'rest_framework'
 ]
 
 MIDDLEWARE = [
