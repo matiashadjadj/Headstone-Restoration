@@ -148,8 +148,13 @@ FRONTEND_STATIC_CANDIDATES = [
     BASE_DIR.parent / "frontend",
     BASE_DIR.parent / "frontent",
 ]
-STATICFILES_DIRS = [BASE_DIR / "core" / "static"] + [
-    path for path in FRONTEND_STATIC_CANDIDATES if path.exists()
+STATICFILES_DIRS = [
+    path
+    for path in [
+        BASE_DIR / "core" / "static",
+        *[path for path in FRONTEND_STATIC_CANDIDATES if path.exists()],
+    ]
+    if path.exists()
 ]
 
 if not DEBUG:
