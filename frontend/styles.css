@@ -680,9 +680,19 @@ body {
 }
 
 @media (min-width: 1101px) {
+  .grid-2 > .card,
+  .grid-equal > .card {
+    max-height: 850px;
+    overflow: auto;
+  }
+
   .grid-2 > .card > .scroll-window,
+  .grid-2 > .card > .scroll-window-sm,
+  .grid-2 > .card > .scroll-window-lg,
   .grid-2 > .card > .scroll-window-fill,
   .grid-equal > .card > .scroll-window,
+  .grid-equal > .card > .scroll-window-sm,
+  .grid-equal > .card > .scroll-window-lg,
   .grid-equal > .card > .scroll-window-fill {
     flex: 1 1 auto;
     min-height: 0;
@@ -692,7 +702,14 @@ body {
 }
 
 @media (min-width: 821px) {
+  .scheduling-grid > .card {
+    max-height: 850px;
+    overflow: auto;
+  }
+
   .scheduling-grid > .card > .scroll-window,
+  .scheduling-grid > .card > .scroll-window-sm,
+  .scheduling-grid > .card > .scroll-window-lg,
   .scheduling-grid > .card > .scroll-window-fill {
     flex: 1 1 auto;
     min-height: 0;
