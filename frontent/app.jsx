@@ -6113,7 +6113,7 @@ function CustomersPageModern({ sessionUser }) {
                 type="search"
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Search name, email, phone, cemetery..."
+                placeholder="Search name, phone, cemetery..."
                 aria-label="Search customers"
               />
               {searchTerm && (
@@ -6125,20 +6125,19 @@ function CustomersPageModern({ sessionUser }) {
           </div>
           <div className="scroll-window scroll-window-lg">
             <div className="table-scroll">
-              <table>
+              <table className="compact-customer-table">
                 <thead>
                   <tr>
                     <th>Customer</th>
                     <th>Memorials</th>
-                    <th>Email</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {customerState.loading && <tr><td colSpan="4" className="meta">Loading customers...</td></tr>}
-                  {!customerState.loading && customers.length === 0 && <tr><td colSpan="4" className="meta">No customers yet.</td></tr>}
+                  {customerState.loading && <tr><td colSpan="3" className="meta">Loading customers...</td></tr>}
+                  {!customerState.loading && customers.length === 0 && <tr><td colSpan="3" className="meta">No customers yet.</td></tr>}
                   {!customerState.loading && customers.length > 0 && filteredCustomers.length === 0 && (
-                    <tr><td colSpan="4" className="meta">No customers match that search.</td></tr>
+                    <tr><td colSpan="3" className="meta">No customers match that search.</td></tr>
                   )}
                   {!customerState.loading && filteredCustomers.map((customer) => (
                     <tr key={customer.id}>
@@ -6147,7 +6146,6 @@ function CustomersPageModern({ sessionUser }) {
                         <div className="meta">{customer.how_heard_about_us || 'Referral source not captured yet'}</div>
                       </td>
                       <td>{customer.memorials_count || 0}</td>
-                      <td>{customer.email || '-'}</td>
                       <td>
                         <div className="table-action-cell">
                           <button className="ghost-btn" type="button" onClick={() => startEdit(customer)}>Edit</button>

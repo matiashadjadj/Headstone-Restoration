@@ -907,6 +907,37 @@ tbody tr:hover td {
   min-width: 680px;
 }
 
+.compact-customer-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.compact-customer-table th:first-child,
+.compact-customer-table td:first-child {
+  width: 58%;
+}
+
+.compact-customer-table th:nth-child(2),
+.compact-customer-table td:nth-child(2) {
+  width: 84px;
+  text-align: center;
+}
+
+.compact-customer-table th:nth-child(3),
+.compact-customer-table td:nth-child(3) {
+  width: 150px;
+}
+
+.compact-customer-table td:nth-child(3) .table-action-cell {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.compact-customer-table td:nth-child(3) .table-action-cell > .ghost-btn {
+  width: 100%;
+}
+
 .users-admin-card {
   min-width: 0;
 }
