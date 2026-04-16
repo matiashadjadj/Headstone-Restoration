@@ -63,8 +63,9 @@ const ROLE_CONFIGS = {
   }
 };
 
-const BRAND_LOGO_HEADER_SRC = 'logo-header.png';
-const BRAND_LOGO_ICON_SRC = 'logo-icon.png';
+const BRAND_ASSET_VERSION = '20260415-login-v2';
+const BRAND_LOGO_HEADER_SRC = `logo-header.png?v=${BRAND_ASSET_VERSION}`;
+const BRAND_LOGO_ICON_SRC = `logo-icon.png?v=${BRAND_ASSET_VERSION}`;
 
 // All API calls go through the same base so the frontend and Django share origin.
 function normalizeApiBase(value) {
