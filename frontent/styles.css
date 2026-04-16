@@ -679,13 +679,26 @@ body {
   height: min(44dvh, 400px);
 }
 
-.grid-2 > .card > .scroll-window-lg,
-.grid-equal > .card > .scroll-window-lg,
-.scheduling-grid > .card > .scroll-window-lg {
-  flex: 1 1 auto;
-  min-height: 0;
-  height: auto;
-  max-height: none;
+@media (min-width: 1101px) {
+  .grid-2 > .card > .scroll-window,
+  .grid-2 > .card > .scroll-window-fill,
+  .grid-equal > .card > .scroll-window,
+  .grid-equal > .card > .scroll-window-fill {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
+    max-height: none;
+  }
+}
+
+@media (min-width: 821px) {
+  .scheduling-grid > .card > .scroll-window,
+  .scheduling-grid > .card > .scroll-window-fill {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
+    max-height: none;
+  }
 }
 
 .scroll-window > .service-list {
